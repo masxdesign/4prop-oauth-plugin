@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del \"C:\\Users\\salga\\EACH\\shared-packages\\auth-plugin\\config\\session.js\")",
+      "Bash(npm uninstall:*)",
+      "Bash(test:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rebase:*)",
+      "Bash(git stash:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
