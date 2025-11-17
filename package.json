@@ -1,5 +1,5 @@
 {
-  "name": "@each/auth-plugin",
+  "name": "@4prop/oauth",
   "version": "1.0.0",
   "description": "Drop-in authentication plugin for Express.js",
   "type": "module",
