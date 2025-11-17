@@ -1,6 +1,6 @@
-# Using Auth Plugin as a Shared Package
+# Using OAuth Package as a Shared Package
 
-This guide shows how to set up the auth plugin as a shared local package that can be installed across multiple projects.
+This guide shows how to set up the OAuth authentication package as a shared local package that can be installed across multiple projects.
 
 ## Platform Notes
 
@@ -25,25 +25,25 @@ cd C:\Users\salga\EACH # Windows
 mkdir shared-packages
 ```
 
-### 2. Move Auth Plugin
+### 2. Move OAuth Package
 
 **macOS/Linux:**
 ```bash
 cd ~/EACH/bizchat
-mv auth-plugin ../shared-packages/auth-plugin
+mv oauth ../shared-packages/oauth
 ```
 
 **Windows:**
 ```bash
 cd C:\Users\salga\EACH\bizchat
-move auth-plugin ..\shared-packages\auth-plugin
+move oauth ..\shared-packages\oauth
 ```
 
 Your folder structure should now be:
 ```
 ~/EACH/                          (or C:\Users\salga\EACH\ on Windows)
 ├── shared-packages/
-│   └── auth-plugin/             ← Package lives here
+│   └── oauth/                   ← Package lives here
 │       ├── package.json
 │       ├── routes/
 │       └── ...
@@ -66,13 +66,13 @@ Your folder structure should now be:
 **macOS/Linux:**
 ```bash
 cd ~/EACH/bizchat/code
-npm install file:../../shared-packages/auth-plugin
+npm install file:../../shared-packages/oauth
 ```
 
 **Windows:**
 ```bash
 cd C:\Users\salga\EACH\bizchat\code
-npm install file:../../shared-packages/auth-plugin
+npm install file:../../shared-packages/oauth
 ```
 
 ### In property-pub project:
@@ -80,24 +80,24 @@ npm install file:../../shared-packages/auth-plugin
 **macOS/Linux:**
 ```bash
 cd ~/EACH/property-pub/code
-npm install file:../../shared-packages/auth-plugin
+npm install file:../../shared-packages/oauth
 ```
 
 **Windows:**
 ```bash
 cd C:\Users\salga\EACH\property-pub\code
-npm install file:../../shared-packages/auth-plugin
+npm install file:../../shared-packages/oauth
 ```
 
 ### What happens:
 
-- NPM creates a symlink in `node_modules/@each/auth-plugin` → `shared-packages/auth-plugin`
+- NPM creates a symlink in `node_modules/@4prop/oauth` → `shared-packages/oauth`
 - Changes to the source are **immediately reflected** in all projects
 - Your `package.json` will have:
   ```json
   {
     "dependencies": {
-      "@each/auth-plugin": "file:../../shared-packages/auth-plugin"
+      "@4prop/oauth": "file:../../shared-packages/oauth"
     }
   }
   ```
@@ -108,9 +108,9 @@ npm install file:../../shared-packages/auth-plugin
 
 ```javascript
 // Import from the package
-import createAuthRouter from '@each/auth-plugin'
-import { authenticate } from '@each/auth-plugin/middleware'
-import MSSQLAuthRepository from '@each/auth-plugin/mssql'
+import createAuthRouter from '@4prop/oauth'
+import { authenticate } from '@4prop/oauth/middleware'
+import MSSQLAuthRepository from '@4prop/oauth/mssql'
 
 // Use it
 const authRepo = new MSSQLAuthRepository()
@@ -124,10 +124,10 @@ app.use('/api/auth', authRouter)
 
 | Import | Path | What it is |
 |--------|------|------------|
-| `@each/auth-plugin` | Default export | `createAuthRouter()` function |
-| `@each/auth-plugin/middleware` | Named exports | `authenticate`, `authenticateWithUser`, `optionalAuth` |
-| `@each/auth-plugin/jwt` | Default export | JWT service functions |
-| `@each/auth-plugin/mssql` | Default export | `MSSQLAuthRepository` class |
+| `@4prop/oauth` | Default export | `createAuthRouter()` function |
+| `@4prop/oauth/middleware` | Named exports | `authenticate`, `authenticateWithUser`, `optionalAuth` |
+| `@4prop/oauth/jwt` | Default export | JWT service functions |
+| `@4prop/oauth/mssql` | Default export | `MSSQLAuthRepository` class |
 
 ---
 
@@ -137,7 +137,7 @@ app.use('/api/auth', authRouter)
 
 **macOS/Linux:**
 ```bash
-cd ~/EACH/shared-packages/auth-plugin
+cd ~/EACH/shared-packages/oauth
 
 # Edit files...
 
@@ -147,7 +147,7 @@ cd ~/EACH/shared-packages/auth-plugin
 
 **Windows:**
 ```bash
-cd C:\Users\salga\EACH\shared-packages\auth-plugin
+cd C:\Users\salga\EACH\shared-packages\oauth
 
 # Edit files...
 
@@ -174,7 +174,7 @@ npm install
 Or for version bumps:
 
 ```bash
-npm update @each/auth-plugin
+npm update @4prop/oauth
 ```
 
 ---
@@ -183,7 +183,7 @@ npm update @each/auth-plugin
 
 ### Semantic Versioning
 
-Update `version` in `shared-packages/auth-plugin/package.json`:
+Update `version` in `shared-packages/oauth/package.json`:
 
 - **1.0.0** → **1.0.1**: Bug fixes (patch)
 - **1.0.0** → **1.1.0**: New features, backward compatible (minor)
@@ -195,7 +195,7 @@ If you want a project to stay on a specific version:
 
 ```bash
 # In the project
-npm install file:../shared-packages/auth-plugin@1.0.0
+npm install file:../shared-packages/oauth@1.0.0
 ```
 
 ---
@@ -217,23 +217,23 @@ If you want more control, use `npm link`:
 **macOS/Linux:**
 ```bash
 # In the package
-cd ~/EACH/shared-packages/auth-plugin
+cd ~/EACH/shared-packages/oauth
 npm link
 
 # In each project
 cd ~/EACH/bizchat/code  # or property-pub/code
-npm link @each/auth-plugin
+npm link @4prop/oauth
 ```
 
 **Windows:**
 ```bash
 # In the package
-cd C:\Users\salga\EACH\shared-packages\auth-plugin
+cd C:\Users\salga\EACH\shared-packages\oauth
 npm link
 
 # In each project
 cd C:\Users\salga\EACH\bizchat\code  # or property-pub\code
-npm link @each/auth-plugin
+npm link @4prop/oauth
 ```
 
 **Note:** `npm link` creates global symlinks, which can cause issues. The `file://` approach is simpler.
@@ -242,13 +242,13 @@ npm link @each/auth-plugin
 
 ## Troubleshooting
 
-### "Cannot find module '@each/auth-plugin'"
+### "Cannot find module '@4prop/oauth'"
 
 Reinstall the package with the correct relative path:
 
 ```bash
 # From bizchat/code or property-pub/code
-npm install file:../../shared-packages/auth-plugin --force
+npm install file:../../shared-packages/oauth --force
 ```
 
 ### Changes not reflecting

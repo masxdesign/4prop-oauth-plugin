@@ -1,4 +1,4 @@
-# Auth Plugin
+# OAuth Authentication Package
 
 Drop-in authentication for Express.js with OAuth + email/password support.
 
@@ -18,7 +18,7 @@ Drop-in authentication for Express.js with OAuth + email/password support.
 
 ```bash
 # From your project directory
-npm install file:../../shared-packages/auth-plugin
+npm install file:../../shared-packages/oauth
 
 # Also install peer dependencies
 npm install express passport passport-google-oauth20 passport-microsoft \
@@ -32,7 +32,7 @@ npm install mssql bcryptjs
 
 ```bash
 # Copy the entire folder to your project
-cp -r auth-plugin ./plugins/
+cp -r oauth ./plugins/
 ```
 
 ---
@@ -42,17 +42,17 @@ cp -r auth-plugin ./plugins/
 ### With NPM Package Install
 
 ```javascript
-import createAuthRouter from '@each/auth-plugin'
-import { authenticate } from '@each/auth-plugin/middleware'
-import MSSQLAuthRepository from '@each/auth-plugin/mssql'
+import createAuthRouter from '@4prop/oauth'
+import { authenticate } from '@4prop/oauth/middleware'
+import MSSQLAuthRepository from '@4prop/oauth/mssql'
 ```
 
 ### With Direct Folder Copy
 
 ```javascript
-import createAuthRouter from './plugins/auth-plugin/routes/auth.js'
-import { authenticate } from './plugins/auth-plugin/middleware/authenticate.js'
-import MSSQLAuthRepository from './plugins/auth-plugin/repositories/mssql/auth-repository.js'
+import createAuthRouter from './plugins/oauth/routes/auth.js'
+import { authenticate } from './plugins/oauth/middleware/authenticate.js'
+import MSSQLAuthRepository from './plugins/oauth/repositories/mssql/auth-repository.js'
 ```
 
 ---
@@ -64,7 +64,7 @@ import MSSQLAuthRepository from './plugins/auth-plugin/repositories/mssql/auth-r
 **Option A: Use MSSQL implementation** (included)
 
 ```javascript
-import MSSQLAuthRepository from '@each/auth-plugin/mssql'
+import MSSQLAuthRepository from '@4prop/oauth/mssql'
 const authRepo = new MSSQLAuthRepository()
 ```
 
@@ -91,8 +91,8 @@ GOOGLE_CLIENT_SECRET=...
 import express from 'express'
 import cookieParser from 'cookie-parser'
 import passport from 'passport'
-import createAuthRouter from '@each/auth-plugin'
-import MSSQLAuthRepository from '@each/auth-plugin/mssql'
+import createAuthRouter from '@4prop/oauth'
+import MSSQLAuthRepository from '@4prop/oauth/mssql'
 
 const app = express()
 
@@ -132,7 +132,7 @@ GET    /api/auth/linkedin/callback
 ## Protecting Routes
 
 ```javascript
-import { authenticate } from '@each/auth-plugin/middleware'
+import { authenticate } from '@4prop/oauth/middleware'
 
 app.get('/api/protected', authenticate, (req, res) => {
     res.json({ user: req.user })
@@ -146,7 +146,7 @@ app.get('/api/protected', authenticate, (req, res) => {
 Passport is auto-configured on first `createAuthRouter` call. For manual control:
 
 ```javascript
-import createAuthRouter, { configurePassport } from '@each/auth-plugin'
+import createAuthRouter, { configurePassport } from '@4prop/oauth'
 
 // Configure passport manually before creating router
 configurePassport(authRepo)
@@ -211,7 +211,7 @@ See `services/auth-repository.interface.md` for details.
 ## Folder Structure
 
 ```
-auth-plugin/
+oauth/
 ├── routes/auth.js              - Express routes
 ├── services/
 │   ├── jwt.js                  - JWT service
