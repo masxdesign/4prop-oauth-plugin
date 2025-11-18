@@ -22,7 +22,7 @@ npm install file:../../shared-packages/oauth
 
 # Also install peer dependencies
 npm install express passport passport-google-oauth20 passport-microsoft \
-            passport-linkedin-oauth2 jsonwebtoken cookie-parser
+            passport-linkedin-oauth2 jsonwebtoken
 
 # If using MSSQL repository
 npm install mssql bcryptjs
@@ -89,7 +89,6 @@ GOOGLE_CLIENT_SECRET=...
 
 ```javascript
 import express from 'express'
-import cookieParser from 'cookie-parser'
 import passport from 'passport'
 import createAuthRouter from '@4prop/oauth'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
@@ -97,7 +96,6 @@ import MSSQLAuthRepository from '@4prop/oauth/mssql'
 const app = express()
 
 app.use(express.json())
-app.use(cookieParser())
 app.use(passport.initialize())
 
 // Create and mount auth routes (passport auto-configures on first call)

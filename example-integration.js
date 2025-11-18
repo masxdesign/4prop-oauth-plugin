@@ -1,24 +1,22 @@
 import express from 'express'
-import cookieParser from 'cookie-parser'
 import passport from 'passport'
 
 // Import auth plugin (when installed as npm package)
-import createAuthRouter from '@each/auth-plugin'
-import { authenticate } from '@each/auth-plugin/middleware'
+import createAuthRouter from '@4prop/oauth'
+import { authenticate } from '@4prop/oauth/middleware'
 
 // Import MSSQL repository or use your custom one
-import MSSQLAuthRepository from '@each/auth-plugin/mssql'
+import MSSQLAuthRepository from '@4prop/oauth/mssql'
 
 const app = express()
 
 // Middleware
 app.use(express.json())
-app.use(cookieParser())
 app.use(passport.initialize())
 
-// Initialize auth with your repository (passport auto-configures on first call)
+// Initialize auth with your repository and Express app
 const authRepo = new MSSQLAuthRepository()
-const authRouter = createAuthRouter(authRepo)
+const authRouter = createAuthRouter(authRepo, app)
 
 // Mount auth routes
 app.use('/api/auth', authRouter)
