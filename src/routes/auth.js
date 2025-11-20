@@ -19,44 +19,68 @@ export default function createAuthRouter(authRepository) {
     const router = express.Router()
 
     // OAuth - Google
-    router.get('/google', passport.authenticate('google', {
-        scope: ['profile', 'email']
-    }))
+    router.get('/google', (req, res, next) => {
+        const { returnTo } = req.query
+        if (returnTo) {
+            req.session.returnTo = returnTo
+        }
+        passport.authenticate('google', {
+            scope: ['profile', 'email']
+        })(req, res, next)
+    })
 
     router.get('/google/callback',
-        passport.authenticate('google', { session: false }),
+        passport.authenticate('google', { session: true }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            res.redirect(`${process.env.CLIENT_URL}/auth/callback`)
+            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
+            delete req.session.returnTo
+            res.redirect(redirectUrl)
         }
     )
 
     // OAuth - Microsoft
-    router.get('/microsoft', passport.authenticate('microsoft', {
-        scope: ['user.read']
-    }))
+    router.get('/microsoft', (req, res, next) => {
+        const { returnTo } = req.query
+        if (returnTo) {
+            req.session.returnTo = returnTo
+        }
+        passport.authenticate('microsoft', {
+            scope: ['user.read']
+        })(req, res, next)
+    })
 
     router.get('/microsoft/callback',
-        passport.authenticate('microsoft', { session: false }),
+        passport.authenticate('microsoft', { session: true }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            res.redirect(`${process.env.CLIENT_URL}/auth/callback`)
+            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
+            delete req.session.returnTo
+            res.redirect(redirectUrl)
         }
     )
 
     // OAuth - LinkedIn
-    router.get('/linkedin', passport.authenticate('linkedin', {
-        scope: ['r_emailaddress', 'r_liteprofile']
-    }))
+    router.get('/linkedin', (req, res, next) => {
+        const { returnTo } = req.query
+        if (returnTo) {
+            req.session.returnTo = returnTo
+        }
+        passport.authenticate('linkedin', {
+            scope: ['r_emailaddress', 'r_liteprofile']
+        })(req, res, next)
+    })
 
     router.get('/linkedin/callback',
-        passport.authenticate('linkedin', { session: false }),
+        passport.authenticate('linkedin', { session: true }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            res.redirect(`${process.env.CLIENT_URL}/auth/callback`)
+            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
+            delete req.session.returnTo
+            res.redirect(redirectUrl)
         }
     )
 
