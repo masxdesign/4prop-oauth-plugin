@@ -1,3 +1,4 @@
+import express from 'express'
 import passport from 'passport'
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20'
 import { Strategy as MicrosoftStrategy } from 'passport-microsoft'
@@ -8,14 +9,14 @@ import { authenticate } from '../middleware/authenticate.js'
 let isPassportConfigured = false
 
 /** Create auth router - pass your Express app instance and auth repository */
-export default function createAuthRouter(authRepository, expressApp) {
+export default function createAuthRouter(authRepository) {
     // Auto-configure passport on first call
     if (!isPassportConfigured) {
         configurePassport(authRepository)
         isPassportConfigured = true
     }
 
-    const router = expressApp.Router()
+    const router = express.Router()
 
     // OAuth - Google
     router.get('/google', passport.authenticate('google', {
