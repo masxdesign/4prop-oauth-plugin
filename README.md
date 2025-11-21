@@ -21,8 +21,8 @@ Drop-in authentication for Express.js with OAuth + email/password support.
 npm install file:../../shared-packages/oauth
 
 # Also install peer dependencies
-npm install express passport passport-google-oauth20 passport-microsoft \
-            passport-linkedin-oauth2 jsonwebtoken
+npm install express express-session passport passport-google-oauth20 \
+            passport-microsoft passport-linkedin-oauth2 jsonwebtoken
 
 # If using MSSQL repository
 npm install mssql bcryptjs
@@ -44,6 +44,7 @@ cp -r oauth ./plugins/
 ```javascript
 import createAuthRouter from '@4prop/oauth'
 import { authenticate } from '@4prop/oauth/middleware'
+import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
 ```
 
@@ -52,6 +53,7 @@ import MSSQLAuthRepository from '@4prop/oauth/mssql'
 ```javascript
 import createAuthRouter from './plugins/oauth/routes/auth.js'
 import { authenticate } from './plugins/oauth/middleware/authenticate.js'
+import { createSessionMiddleware } from './plugins/oauth/config/session.js'
 import MSSQLAuthRepository from './plugins/oauth/repositories/mssql/auth-repository.js'
 ```
 
@@ -78,7 +80,6 @@ See `services/auth-repository.interface.md` for required methods (6 methods).
 # Required
 JWT_ACCESS_SECRET=your-secret
 JWT_REFRESH_SECRET=your-refresh-secret
-CLIENT_URL=http://localhost:3000
 
 # Optional OAuth
 GOOGLE_CLIENT_ID=...
@@ -91,11 +92,13 @@ GOOGLE_CLIENT_SECRET=...
 import express from 'express'
 import passport from 'passport'
 import createAuthRouter from '@4prop/oauth'
+import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
 
 const app = express()
 
 app.use(express.json())
+app.use(createSessionMiddleware()) // Required for OAuth returnTo functionality
 app.use(passport.initialize())
 
 // Create and mount auth routes (passport auto-configures on first call)
@@ -111,19 +114,31 @@ app.listen(3000)
 ## API Endpoints
 
 ```
-POST   /api/auth/register          - Register with email/password
-POST   /api/auth/login             - Login with email/password
-POST   /api/auth/logout            - Logout (clear cookies)
-POST   /api/auth/refresh           - Refresh access token
-GET    /api/auth/me                - Get current user (requires auth)
+POST   /api/auth/register                   - Register with email/password
+POST   /api/auth/login                      - Login with email/password
+POST   /api/auth/logout                     - Logout (clear cookies)
+POST   /api/auth/refresh                    - Refresh access token
+GET    /api/auth/me                         - Get current user (requires auth)
 
-GET    /api/auth/google            - OAuth with Google
+GET    /api/auth/google?returnTo=/path      - OAuth with Google (optional returnTo)
 GET    /api/auth/google/callback
-GET    /api/auth/microsoft         - OAuth with Microsoft
+GET    /api/auth/microsoft?returnTo=/path   - OAuth with Microsoft (optional returnTo)
 GET    /api/auth/microsoft/callback
-GET    /api/auth/linkedin          - OAuth with LinkedIn
+GET    /api/auth/linkedin?returnTo=/path    - OAuth with LinkedIn (optional returnTo)
 GET    /api/auth/linkedin/callback
 ```
+
+### OAuth returnTo Parameter
+
+All OAuth endpoints support an optional `returnTo` query parameter. After successful authentication, the user will be redirected to this URL instead of the default `/auth/callback`.
+
+**Example:**
+```
+/api/auth/google?returnTo=/dashboard
+/api/auth/microsoft?returnTo=/profile
+```
+
+**Note:** Requires session middleware to be configured (see setup above).
 
 ---
 
@@ -160,7 +175,7 @@ const authRouter = createAuthRouter(authRepo)
 ```env
 JWT_ACCESS_SECRET=your-secret
 JWT_REFRESH_SECRET=your-refresh-secret
-CLIENT_URL=http://localhost:3000
+SESSION_SECRET=your-session-secret
 ```
 
 ### Optional

@@ -107,10 +107,21 @@ npm install file:../../shared-packages/oauth
 ## Using in Your Code
 
 ```javascript
+import express from 'express'
+import passport from 'passport'
+
 // Import from the package
 import createAuthRouter from '@4prop/oauth'
 import { authenticate } from '@4prop/oauth/middleware'
+import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
+
+const app = express()
+
+// Middleware setup
+app.use(express.json())
+app.use(createSessionMiddleware()) // Required for OAuth returnTo functionality
+app.use(passport.initialize())
 
 // Use it
 const authRepo = new MSSQLAuthRepository()
@@ -128,6 +139,7 @@ app.use('/api/auth', authRouter)
 | `@4prop/oauth/middleware` | Named exports | `authenticate`, `authenticateWithUser`, `optionalAuth` |
 | `@4prop/oauth/jwt` | Default export | JWT service functions |
 | `@4prop/oauth/mssql` | Default export | `MSSQLAuthRepository` class |
+| `@4prop/oauth/session` | Named export | `createSessionMiddleware()` function |
 
 ---
 

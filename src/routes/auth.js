@@ -13,6 +13,7 @@ export default function createAuthRouter(authRepository) {
     // Auto-configure passport on first call
     if (!isPassportConfigured) {
         configurePassport(authRepository)
+        configurePassportSerialization()
         isPassportConfigured = true
     }
 
@@ -21,21 +22,25 @@ export default function createAuthRouter(authRepository) {
     // OAuth - Google
     router.get('/google', (req, res, next) => {
         const { returnTo } = req.query
-        if (returnTo) {
+        if (returnTo && req.session) {
             req.session.returnTo = returnTo
         }
+
         passport.authenticate('google', {
             scope: ['profile', 'email']
         })(req, res, next)
     })
 
     router.get('/google/callback',
-        passport.authenticate('google', { session: true }),
+        passport.authenticate('google', { session: false }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
-            delete req.session.returnTo
+            const redirectUrl = (req.session?.returnTo) || `/auth/callback`
+            if (req.session?.returnTo) {
+                delete req.session.returnTo
+            }
+            
             res.redirect(redirectUrl)
         }
     )
@@ -43,7 +48,7 @@ export default function createAuthRouter(authRepository) {
     // OAuth - Microsoft
     router.get('/microsoft', (req, res, next) => {
         const { returnTo } = req.query
-        if (returnTo) {
+        if (returnTo && req.session) {
             req.session.returnTo = returnTo
         }
         passport.authenticate('microsoft', {
@@ -52,12 +57,14 @@ export default function createAuthRouter(authRepository) {
     })
 
     router.get('/microsoft/callback',
-        passport.authenticate('microsoft', { session: true }),
+        passport.authenticate('microsoft', { session: false }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
-            delete req.session.returnTo
+            const redirectUrl = (req.session?.returnTo) || `/auth/callback`
+            if (req.session?.returnTo) {
+                delete req.session.returnTo
+            }
             res.redirect(redirectUrl)
         }
     )
@@ -65,7 +72,7 @@ export default function createAuthRouter(authRepository) {
     // OAuth - LinkedIn
     router.get('/linkedin', (req, res, next) => {
         const { returnTo } = req.query
-        if (returnTo) {
+        if (returnTo && req.session) {
             req.session.returnTo = returnTo
         }
         passport.authenticate('linkedin', {
@@ -74,12 +81,14 @@ export default function createAuthRouter(authRepository) {
     })
 
     router.get('/linkedin/callback',
-        passport.authenticate('linkedin', { session: true }),
+        passport.authenticate('linkedin', { session: false }),
         async (req, res) => {
             const tokens = jwt.generateTokens(req.user)
             jwt.setTokenCookies(res, tokens)
-            const redirectUrl = req.session.returnTo || `${process.env.CLIENT_URL}/auth/callback`
-            delete req.session.returnTo
+            const redirectUrl = (req.session?.returnTo) || `/auth/callback`
+            if (req.session?.returnTo) {
+                delete req.session.returnTo
+            }
             res.redirect(redirectUrl)
         }
     )
@@ -245,4 +254,17 @@ export function configurePassport(authRepository) {
             }
         }))
     }
+}
+
+/** Configure passport serialization for sessions */
+function configurePassportSerialization() {
+    // Serialize user to session (store minimal data)
+    passport.serializeUser((user, done) => {
+        done(null, user)
+    })
+
+    // Deserialize user from session
+    passport.deserializeUser((user, done) => {
+        done(null, user)
+    })
 }
