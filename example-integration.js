@@ -4,6 +4,7 @@ import passport from 'passport'
 // Import auth plugin (when installed as npm package)
 import createAuthRouter from '@4prop/oauth'
 import { authenticate } from '@4prop/oauth/middleware'
+import { createSessionMiddleware } from '@4prop/oauth/session'
 
 // Import MSSQL repository or use your custom one
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
@@ -12,11 +13,12 @@ const app = express()
 
 // Middleware
 app.use(express.json())
+app.use(createSessionMiddleware()) // Required for OAuth returnTo functionality
 app.use(passport.initialize())
 
 // Initialize auth with your repository and Express app
 const authRepo = new MSSQLAuthRepository()
-const authRouter = createAuthRouter(authRepo, app)
+const authRouter = createAuthRouter(authRepo)
 
 // Mount auth routes
 app.use('/api/auth', authRouter)
