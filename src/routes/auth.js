@@ -7,12 +7,22 @@ import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
 
 let isPassportConfigured = false
+let oauthConfig = {}
+let jwtConfig = {}
 
-/** Create auth router - pass your Express app instance and auth repository */
-export default function createAuthRouter(authRepository) {
+/** Create auth router - pass your auth repository and optional config */
+export default function createAuthRouter(authRepository, config = {}) {
     // Auto-configure passport on first call
     if (!isPassportConfigured) {
-        configurePassport(authRepository)
+        oauthConfig = config.oauth || {}
+        jwtConfig = config.jwt || {}
+
+        // Configure JWT if config provided
+        if (Object.keys(jwtConfig).length > 0) {
+            jwt.setJwtConfig(jwtConfig)
+        }
+
+        configurePassport(authRepository, oauthConfig)
         configurePassportSerialization()
         isPassportConfigured = true
     }
@@ -180,13 +190,18 @@ function sanitizeUser(user) {
 }
 
 /** Configure passport strategies - call once during app initialization */
-export function configurePassport(authRepository) {
+export function configurePassport(authRepository, oauth = {}) {
     // Google OAuth
-    if (process.env.GOOGLE_CLIENT_ID) {
+    const googleConfig = oauth.google || (process.env.GOOGLE_CLIENT_ID ? {
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET
+    } : null)
+
+    if (googleConfig) {
         passport.use(new GoogleStrategy({
-            clientID: process.env.GOOGLE_CLIENT_ID,
-            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-            callbackURL: '/api/auth/google/callback'
+            clientID: googleConfig.clientId,
+            clientSecret: googleConfig.clientSecret,
+            callbackURL: googleConfig.callbackURL || '/api/auth/google/callback'
         },
         async (accessToken, refreshToken, profile, done) => {
             try {
@@ -206,11 +221,16 @@ export function configurePassport(authRepository) {
     }
 
     // Microsoft OAuth
-    if (process.env.MICROSOFT_CLIENT_ID) {
+    const microsoftConfig = oauth.microsoft || (process.env.MICROSOFT_CLIENT_ID ? {
+        clientId: process.env.MICROSOFT_CLIENT_ID,
+        clientSecret: process.env.MICROSOFT_CLIENT_SECRET
+    } : null)
+
+    if (microsoftConfig) {
         passport.use(new MicrosoftStrategy({
-            clientID: process.env.MICROSOFT_CLIENT_ID,
-            clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
-            callbackURL: '/api/auth/microsoft/callback',
+            clientID: microsoftConfig.clientId,
+            clientSecret: microsoftConfig.clientSecret,
+            callbackURL: microsoftConfig.callbackURL || '/api/auth/microsoft/callback',
             scope: ['user.read']
         },
         async (accessToken, refreshToken, profile, done) => {
@@ -231,11 +251,16 @@ export function configurePassport(authRepository) {
     }
 
     // LinkedIn OAuth
-    if (process.env.LINKEDIN_CLIENT_ID) {
+    const linkedinConfig = oauth.linkedin || (process.env.LINKEDIN_CLIENT_ID ? {
+        clientId: process.env.LINKEDIN_CLIENT_ID,
+        clientSecret: process.env.LINKEDIN_CLIENT_SECRET
+    } : null)
+
+    if (linkedinConfig) {
         passport.use(new LinkedInStrategy({
-            clientID: process.env.LINKEDIN_CLIENT_ID,
-            clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-            callbackURL: '/api/auth/linkedin/callback',
+            clientID: linkedinConfig.clientId,
+            clientSecret: linkedinConfig.clientSecret,
+            callbackURL: linkedinConfig.callbackURL || '/api/auth/linkedin/callback',
             scope: ['r_emailaddress', 'r_liteprofile']
         },
         async (accessToken, refreshToken, profile, done) => {

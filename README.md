@@ -44,7 +44,6 @@ cp -r oauth ./plugins/
 ```javascript
 import createAuthRouter from '@4prop/oauth'
 import { authenticate } from '@4prop/oauth/middleware'
-import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
 ```
 
@@ -53,7 +52,6 @@ import MSSQLAuthRepository from '@4prop/oauth/mssql'
 ```javascript
 import createAuthRouter from './plugins/oauth/routes/auth.js'
 import { authenticate } from './plugins/oauth/middleware/authenticate.js'
-import { createSessionMiddleware } from './plugins/oauth/config/session.js'
 import MSSQLAuthRepository from './plugins/oauth/repositories/mssql/auth-repository.js'
 ```
 
@@ -74,40 +72,68 @@ const authRepo = new MSSQLAuthRepository()
 
 See `services/auth-repository.interface.md` for required methods (6 methods).
 
-### 2. Setup Environment
+### 2. Setup Configuration
 
-```env
-# Required
-JWT_ACCESS_SECRET=your-secret
-JWT_REFRESH_SECRET=your-refresh-secret
-
-# Optional OAuth
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
+```javascript
+// config.js
+export default {
+  database: {
+    server: 'localhost',
+    database: 'mydb',
+    user: 'sa',
+    password: 'password'
+  },
+  jwt: {
+    accessSecret: 'your-access-secret',
+    refreshSecret: 'your-refresh-secret',
+    accessExpiry: '15m',      // optional
+    refreshExpiry: '7d',      // optional
+    production: false         // optional
+  },
+  session: {
+    secret: 'your-session-secret'
+  },
+  oauth: {                    // optional
+    google: {
+      clientId: 'your-google-client-id',
+      clientSecret: 'your-google-client-secret'
+    }
+  }
+}
 ```
 
 ### 3. Integrate in Express
 
 ```javascript
 import express from 'express'
+import session from 'express-session'
 import passport from 'passport'
 import createAuthRouter from '@4prop/oauth'
-import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
+import config from './config.js'
 
 const app = express()
 
 app.use(express.json())
-app.use(createSessionMiddleware()) // Required for OAuth returnTo functionality
+app.use(session({
+    secret: config.session.secret,
+    resave: false,
+    saveUninitialized: false
+})) // Required for OAuth returnTo functionality
 app.use(passport.initialize())
 
-// Create and mount auth routes (passport auto-configures on first call)
-const authRepo = new MSSQLAuthRepository()
-const authRouter = createAuthRouter(authRepo)
+// Pass config to repository and router
+const authRepo = new MSSQLAuthRepository(config.database)
+const authRouter = createAuthRouter(authRepo, {
+    jwt: config.jwt,
+    oauth: config.oauth
+})
 app.use('/api/auth', authRouter)
 
 app.listen(3000)
 ```
+
+**Note:** Environment variables are still supported as fallback if no config is provided.
 
 ---
 
@@ -154,54 +180,84 @@ app.get('/api/protected', authenticate, (req, res) => {
 
 ---
 
-## Advanced: Manual Passport Configuration
+## Configuration Options
 
-Passport is auto-configured on first `createAuthRouter` call. For manual control:
+### Database Config (for MSSQLAuthRepository)
 
 ```javascript
-import createAuthRouter, { configurePassport } from '@4prop/oauth'
-
-// Configure passport manually before creating router
-configurePassport(authRepo)
-const authRouter = createAuthRouter(authRepo)
+{
+  server: 'localhost',       // or 'host'
+  port: 1433,                // optional, default: 1433
+  user: 'sa',                // or 'username'
+  password: 'yourpassword',
+  database: 'yourdatabase',
+  encrypt: true,             // optional, default: true
+  trustServerCertificate: true, // optional, default: true
+  options: { },              // optional MSSQL options
+  pool: { }                  // optional pool config
+}
 ```
 
----
+### JWT Config
 
-## Environment Variables
+```javascript
+{
+  accessSecret: 'your-access-secret',   // required
+  refreshSecret: 'your-refresh-secret', // required
+  accessExpiry: '15m',                  // optional, default: '15m'
+  refreshExpiry: '7d',                  // optional, default: '7d'
+  production: false                     // optional, affects secure cookie flag
+}
+```
 
-### Required
+### OAuth Config
+
+```javascript
+{
+  google: {
+    clientId: 'your-client-id',
+    clientSecret: 'your-client-secret',
+    callbackURL: '/api/auth/google/callback'  // optional
+  },
+  microsoft: {
+    clientId: 'your-client-id',
+    clientSecret: 'your-client-secret',
+    callbackURL: '/api/auth/microsoft/callback'  // optional
+  },
+  linkedin: {
+    clientId: 'your-client-id',
+    clientSecret: 'your-client-secret',
+    callbackURL: '/api/auth/linkedin/callback'  // optional
+  }
+}
+```
+
+### Environment Variables (Fallback)
+
+If no config is provided, the package falls back to environment variables:
 
 ```env
+# JWT
 JWT_ACCESS_SECRET=your-secret
 JWT_REFRESH_SECRET=your-refresh-secret
-SESSION_SECRET=your-session-secret
-```
-
-### Optional
-
-```env
 JWT_ACCESS_EXPIRY=15m
 JWT_REFRESH_EXPIRY=7d
-NODE_ENV=development
+NODE_ENV=production
 
-# OAuth providers
+# Database
+DB_HOST=localhost
+DB_PORT=1433
+DB_USER=sa
+DB_PASSWORD=yourpassword
+DB_NAME=yourdatabase
+
+# OAuth
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 MICROSOFT_CLIENT_ID=...
 MICROSOFT_CLIENT_SECRET=...
 LINKEDIN_CLIENT_ID=...
 LINKEDIN_CLIENT_SECRET=...
-```
-
-### Database (for MSSQL implementation)
-
-```env
-DB_HOST=localhost
-DB_PORT=1433
-DB_USER=sa
-DB_PASSWORD=yourpassword
-DB_NAME=yourdatabase
 ```
 
 ---
