@@ -1,8 +1,13 @@
-import { getPool } from './pool.js'
+import { getPool, setPoolConfig } from './pool.js'
 import bcrypt from 'bcryptjs'
 
 /** Reference MSSQL implementation of auth repository */
 export default class MSSQLAuthRepository {
+    constructor(dbConfig = null) {
+        if (dbConfig) {
+            setPoolConfig(dbConfig)
+        }
+    }
 
     async findUserByEmail(email) {
         const pool = await getPool()

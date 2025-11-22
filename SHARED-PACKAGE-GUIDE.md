@@ -1,290 +1,127 @@
-# Using OAuth Package as a Shared Package
+# OAuth Shared Package Guide
 
-This guide shows how to set up the OAuth authentication package as a shared local package that can be installed across multiple projects.
+Setup the OAuth package as a shared local package across multiple projects.
 
-## Platform Notes
+## Setup
 
-This guide includes commands for both **macOS/Linux** and **Windows**. Use the commands that match your operating system.
-
-- **macOS/Linux**: Use `~/EACH` for paths and forward slashes `/`
-- **Windows**: Use `C:\Users\salga\EACH` for paths and backslashes `\`
-
----
-
-## Setup (One Time)
-
-### 1. Create Shared Packages Directory
+### 1. Create Structure
 
 ```bash
-# Navigate to your projects root
-cd ~/EACH              # macOS/Linux
-# or
-cd C:\Users\salga\EACH # Windows
+# Navigate to EACH directory
+cd ~/EACH                # macOS/Linux
+cd C:\Users\salga\EACH   # Windows
 
-# Create shared packages directory
+# Create and move package
 mkdir shared-packages
+mv oauth shared-packages/oauth   # macOS/Linux
+move oauth shared-packages\oauth # Windows
 ```
 
-### 2. Move OAuth Package
+Expected structure:
+```
+EACH/
+├── shared-packages/oauth/    ← Package
+├── bizchat/code/
+└── property-pub/code/
+```
 
-**macOS/Linux:**
+### 2. Install in Projects
+
 ```bash
-cd ~/EACH/bizchat
-mv oauth ../shared-packages/oauth
-```
-
-**Windows:**
-```bash
-cd C:\Users\salga\EACH\bizchat
-move oauth ..\shared-packages\oauth
-```
-
-Your folder structure should now be:
-```
-~/EACH/                          (or C:\Users\salga\EACH\ on Windows)
-├── shared-packages/
-│   └── oauth/                   ← Package lives here
-│       ├── package.json
-│       ├── routes/
-│       └── ...
-│
-├── bizchat/
-│   └── code/
-│       └── package.json
-│
-└── property-pub/
-    └── code/
-        └── package.json
-```
-
----
-
-## Installing in Projects
-
-### In bizchat project:
-
-**macOS/Linux:**
-```bash
-cd ~/EACH/bizchat/code
+# From project directory (bizchat/code or property-pub/code)
 npm install file:../../shared-packages/oauth
 ```
 
-**Windows:**
-```bash
-cd C:\Users\salga\EACH\bizchat\code
-npm install file:../../shared-packages/oauth
-```
+Creates symlink in `node_modules/@4prop/oauth` with live updates
 
-### In property-pub project:
-
-**macOS/Linux:**
-```bash
-cd ~/EACH/property-pub/code
-npm install file:../../shared-packages/oauth
-```
-
-**Windows:**
-```bash
-cd C:\Users\salga\EACH\property-pub\code
-npm install file:../../shared-packages/oauth
-```
-
-### What happens:
-
-- NPM creates a symlink in `node_modules/@4prop/oauth` → `shared-packages/oauth`
-- Changes to the source are **immediately reflected** in all projects
-- Your `package.json` will have:
-  ```json
-  {
-    "dependencies": {
-      "@4prop/oauth": "file:../../shared-packages/oauth"
-    }
-  }
-  ```
-
----
-
-## Using in Your Code
+## Usage
 
 ```javascript
 import express from 'express'
+import session from 'express-session'
 import passport from 'passport'
-
-// Import from the package
 import createAuthRouter from '@4prop/oauth'
 import { authenticate } from '@4prop/oauth/middleware'
-import { createSessionMiddleware } from '@4prop/oauth/session'
 import MSSQLAuthRepository from '@4prop/oauth/mssql'
+import config from './config.js'
 
 const app = express()
 
-// Middleware setup
 app.use(express.json())
-app.use(createSessionMiddleware()) // Required for OAuth returnTo functionality
+app.use(session({
+  secret: config.session.secret,
+  resave: false,
+  saveUninitialized: false
+}))
 app.use(passport.initialize())
 
-// Use it
-const authRepo = new MSSQLAuthRepository()
-const authRouter = createAuthRouter(authRepo)
+// Pass config to repository and router
+const authRepo = new MSSQLAuthRepository(config.database)
+const authRouter = createAuthRouter(authRepo, {
+  jwt: config.jwt,
+  oauth: config.oauth
+})
 app.use('/api/auth', authRouter)
 ```
 
----
-
-## Available Imports
-
-| Import | Path | What it is |
-|--------|------|------------|
-| `@4prop/oauth` | Default export | `createAuthRouter()` function |
-| `@4prop/oauth/middleware` | Named exports | `authenticate`, `authenticateWithUser`, `optionalAuth` |
-| `@4prop/oauth/jwt` | Default export | JWT service functions |
-| `@4prop/oauth/mssql` | Default export | `MSSQLAuthRepository` class |
-| `@4prop/oauth/session` | Named export | `createSessionMiddleware()` function |
-
----
-
-## Updating the Package
-
-### When you make changes to the shared package:
-
-**macOS/Linux:**
-```bash
-cd ~/EACH/shared-packages/oauth
-
-# Edit files...
-
-# Bump version (optional but recommended)
-# Edit package.json, change version: "1.0.0" → "1.0.1"
+**Example config.js:**
+```javascript
+export default {
+  database: {
+    server: 'localhost',
+    port: 1433,
+    user: 'sa',
+    password: 'yourpassword',
+    database: 'yourdatabase'
+  },
+  jwt: {
+    accessSecret: 'your-access-secret',
+    refreshSecret: 'your-refresh-secret',
+    accessExpiry: '15m',
+    refreshExpiry: '7d',
+    production: false
+  },
+  session: {
+    secret: 'your-session-secret'
+  },
+  oauth: {
+    google: {
+      clientId: 'your-client-id',
+      clientSecret: 'your-client-secret'
+    }
+  }
+}
 ```
 
-**Windows:**
-```bash
-cd C:\Users\salga\EACH\shared-packages\oauth
+**Available imports:**
+- `@4prop/oauth` - `createAuthRouter()`
+- `@4prop/oauth/middleware` - `authenticate`, `authenticateWithUser`, `optionalAuth`
+- `@4prop/oauth/jwt` - JWT service
+- `@4prop/oauth/mssql` - `MSSQLAuthRepository`
 
-# Edit files...
+## Updates
 
-# Bump version (optional but recommended)
-# Edit package.json, change version: "1.0.0" → "1.0.1"
-```
-
-### Update projects:
-
-Since it's a symlink, **changes are live immediately**. But to ensure cache is cleared:
-
-**macOS/Linux:**
-```bash
-cd ~/EACH/bizchat/code  # or property-pub/code
-npm install
-```
-
-**Windows:**
-```bash
-cd C:\Users\salga\EACH\bizchat\code  # or property-pub\code
-npm install
-```
-
-Or for version bumps:
+Changes are **live immediately** via symlink. For version bumps:
 
 ```bash
+# In shared-packages/oauth/package.json
+# Update version: 1.0.0 → 1.0.1 (patch), 1.1.0 (minor), 2.0.0 (major)
+
+# In projects
 npm update @4prop/oauth
 ```
 
----
-
-## Version Management
-
-### Semantic Versioning
-
-Update `version` in `shared-packages/oauth/package.json`:
-
-- **1.0.0** → **1.0.1**: Bug fixes (patch)
-- **1.0.0** → **1.1.0**: New features, backward compatible (minor)
-- **1.0.0** → **2.0.0**: Breaking changes (major)
-
-### Lock to Specific Version (Optional)
-
-If you want a project to stay on a specific version:
-
-```bash
-# In the project
-npm install file:../shared-packages/oauth@1.0.0
-```
-
----
-
-## Advantages of This Approach
-
-✅ **Single source of truth** - One codebase, multiple projects
-✅ **Live updates** - Changes reflect immediately via symlinks
-✅ **No npm registry** - No need to publish to npm
-✅ **Version control** - Track changes in git
-✅ **Easy debugging** - Source code is local and editable
-
----
-
-## Alternative: npm link (More Complex)
-
-If you want more control, use `npm link`:
-
-**macOS/Linux:**
-```bash
-# In the package
-cd ~/EACH/shared-packages/oauth
-npm link
-
-# In each project
-cd ~/EACH/bizchat/code  # or property-pub/code
-npm link @4prop/oauth
-```
-
-**Windows:**
-```bash
-# In the package
-cd C:\Users\salga\EACH\shared-packages\oauth
-npm link
-
-# In each project
-cd C:\Users\salga\EACH\bizchat\code  # or property-pub\code
-npm link @4prop/oauth
-```
-
-**Note:** `npm link` creates global symlinks, which can cause issues. The `file://` approach is simpler.
-
----
-
 ## Troubleshooting
 
-### "Cannot find module '@4prop/oauth'"
-
-Reinstall the package with the correct relative path:
-
+**Module not found:**
 ```bash
-# From bizchat/code or property-pub/code
 npm install file:../../shared-packages/oauth --force
 ```
 
-### Changes not reflecting
-
-**macOS/Linux:**
+**Changes not reflecting:**
 ```bash
-# Clear node_modules and reinstall
-rm -rf node_modules
-npm install
-```
-
-**Windows:**
-```bash
-# Clear node_modules and reinstall
-rmdir /s /q node_modules
-npm install
-```
-
-Or use cross-platform:
-```bash
-# Works on both platforms
 npm ci
 ```
 
-### ESM import errors
-
-Make sure your project has `"type": "module"` in `package.json`.
+**ESM import errors:**
+Add `"type": "module"` to `package.json`
