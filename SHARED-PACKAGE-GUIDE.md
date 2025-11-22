@@ -1,38 +1,33 @@
 # OAuth Shared Package Guide
 
-Setup the OAuth package as a shared local package across multiple projects.
+Setup the OAuth package as a shared package using npm workspaces.
 
 ## Setup
 
-### 1. Create Structure
+### 1. Configure Root package.json
+
+In your root `EACH/package.json`:
+
+```json
+{
+  "name": "each-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/backend-shared/oauth",
+    "packages/bizchat/code",
+    "packages/property-pub/code"
+  ]
+}
+```
+
+### 2. Install Dependencies
 
 ```bash
-# Navigate to EACH directory
-cd ~/EACH                # macOS/Linux
-cd C:\Users\salga\EACH   # Windows
-
-# Create and move package
-mkdir shared-packages
-mv oauth shared-packages/oauth   # macOS/Linux
-move oauth shared-packages\oauth # Windows
+# From EACH root directory
+npm install
 ```
 
-Expected structure:
-```
-EACH/
-├── shared-packages/oauth/    ← Package
-├── bizchat/code/
-└── property-pub/code/
-```
-
-### 2. Install in Projects
-
-```bash
-# From project directory (bizchat/code or property-pub/code)
-npm install file:../../shared-packages/oauth
-```
-
-Creates symlink in `node_modules/@4prop/oauth` with live updates
+This automatically links all workspace packages. The OAuth package is now available as `@4prop/oauth` in all workspace projects.
 
 ## Usage
 
@@ -101,27 +96,28 @@ export default {
 
 ## Updates
 
-Changes are **live immediately** via symlink. For version bumps:
+Changes to the OAuth package are **live immediately** across all workspace projects.
 
+**Version bumps:**
 ```bash
-# In shared-packages/oauth/package.json
-# Update version: 1.0.0 → 1.0.1 (patch), 1.1.0 (minor), 2.0.0 (major)
+# Update version in packages/backend-shared/oauth/package.json
+# 1.0.0 → 1.0.1 (patch), 1.1.0 (minor), 2.0.0 (major)
 
-# In projects
-npm update @4prop/oauth
+# From root
+npm install
 ```
 
 ## Troubleshooting
 
 **Module not found:**
 ```bash
-npm install file:../../shared-packages/oauth --force
+# From EACH root
+npm install --force
 ```
 
 **Changes not reflecting:**
 ```bash
-npm ci
+# Clear and reinstall from root
+rm -rf node_modules package-lock.json
+npm install
 ```
-
-**ESM import errors:**
-Add `"type": "module"` to `package.json`
