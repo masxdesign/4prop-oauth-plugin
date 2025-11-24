@@ -192,10 +192,7 @@ function sanitizeUser(user) {
 /** Configure passport strategies - call once during app initialization */
 export function configurePassport(authRepository, oauth = {}) {
     // Google OAuth
-    const googleConfig = oauth.google || (process.env.GOOGLE_CLIENT_ID ? {
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET
-    } : null)
+    const googleConfig = oauth.google
 
     if (googleConfig) {
         passport.use(new GoogleStrategy({
@@ -221,10 +218,7 @@ export function configurePassport(authRepository, oauth = {}) {
     }
 
     // Microsoft OAuth
-    const microsoftConfig = oauth.microsoft || (process.env.MICROSOFT_CLIENT_ID ? {
-        clientId: process.env.MICROSOFT_CLIENT_ID,
-        clientSecret: process.env.MICROSOFT_CLIENT_SECRET
-    } : null)
+    const microsoftConfig = oauth.microsoft
 
     if (microsoftConfig) {
         passport.use(new MicrosoftStrategy({
@@ -251,10 +245,7 @@ export function configurePassport(authRepository, oauth = {}) {
     }
 
     // LinkedIn OAuth
-    const linkedinConfig = oauth.linkedin || (process.env.LINKEDIN_CLIENT_ID ? {
-        clientId: process.env.LINKEDIN_CLIENT_ID,
-        clientSecret: process.env.LINKEDIN_CLIENT_SECRET
-    } : null)
+    const linkedinConfig = oauth.linkedin
 
     if (linkedinConfig) {
         passport.use(new LinkedInStrategy({
