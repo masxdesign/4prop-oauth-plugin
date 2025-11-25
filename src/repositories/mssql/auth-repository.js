@@ -24,7 +24,19 @@ export default class MSSQLAuthRepository {
         const pool = await getPool()
         const result = await pool.request()
             .input('email', email)
-            .query('SELECT * FROM a_rcUsers WHERE email = @email')
+            .query(`
+                SELECT
+                    [id],
+                    [first] [firstname],
+                    [last] [surname],
+                    [email],
+                    [oauth_provider],
+                    [oauth_id],
+                    [avatar],
+                    [last_login],
+                    [neg_id]
+                FROM a_rcUsers WHERE email = @email
+            `)
 
         return result.recordset[0] || null
     }
@@ -34,7 +46,19 @@ export default class MSSQLAuthRepository {
         const result = await pool.request()
             .input('provider', provider)
             .input('oauthId', oauthId)
-            .query('SELECT * FROM a_rcUsers WHERE oauth_provider = @provider AND oauth_id = @oauthId')
+            .query(`
+                SELECT
+                    [id],
+                    [first] [firstname],
+                    [last] [surname],
+                    [email],
+                    [oauth_provider],
+                    [oauth_id],
+                    [avatar],
+                    [last_login],
+                    [neg_id]
+                FROM a_rcUsers WHERE oauth_provider = @provider AND oauth_id = @oauthId
+            `)
 
         return result.recordset[0] || null
     }

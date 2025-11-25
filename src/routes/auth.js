@@ -165,6 +165,9 @@ export default function createAuthRouter(authRepository, config = {}) {
         try {
             const user = await authRepository.getUserById(req.user.userId)
 
+            console.log(user, req);
+            
+
             if (!user) {
                 return res.status(404).json({ error: 'User not found' })
             }
