@@ -1,41 +1,36 @@
 import jwt from 'jsonwebtoken'
+import { isProduction } from '../utils/env.js'
 
 let jwtConfig = {
     accessSecret: null,
     refreshSecret: null,
     accessExpiry: '15m',
-    refreshExpiry: '7d',
-    production: false
+    refreshExpiry: '7d'
 }
 
 export function setJwtConfig(config) {
     jwtConfig = {
-        accessSecret: config.accessSecret || config.access?.secret,
-        refreshSecret: config.refreshSecret || config.refresh?.secret,
-        accessExpiry: config.accessExpiry || config.access?.expiry || '15m',
-        refreshExpiry: config.refreshExpiry || config.refresh?.expiry || '7d',
-        production: config.production ?? (process.env.NODE_ENV === 'production')
+        accessSecret: config.accessSecret,
+        refreshSecret: config.refreshSecret,
+        accessExpiry: config.accessExpiry || '15m',
+        refreshExpiry: config.refreshExpiry || '7d'
     }
 }
 
 function getAccessSecret() {
-    return jwtConfig.accessSecret || process.env.JWT_ACCESS_SECRET
+    return jwtConfig.accessSecret
 }
 
 function getRefreshSecret() {
-    return jwtConfig.refreshSecret || process.env.JWT_REFRESH_SECRET
+    return jwtConfig.refreshSecret
 }
 
 function getAccessExpiry() {
-    return jwtConfig.accessExpiry || process.env.JWT_ACCESS_EXPIRY || '15m'
+    return jwtConfig.accessExpiry
 }
 
 function getRefreshExpiry() {
-    return jwtConfig.refreshExpiry || process.env.JWT_REFRESH_EXPIRY || '7d'
-}
-
-function isProduction() {
-    return jwtConfig.production ?? (process.env.NODE_ENV === 'production')
+    return jwtConfig.refreshExpiry
 }
 
 export function generateAccessToken(user) {
@@ -76,6 +71,7 @@ export function setTokenCookies(res, tokens) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 15 * 60 * 1000 // 15 minutes
     })
 
@@ -83,6 +79,7 @@ export function setTokenCookies(res, tokens) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     })
 }
@@ -94,13 +91,27 @@ export function setAccessTokenCookie(res, accessToken) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 15 * 60 * 1000
     })
 }
 
 export function clearTokenCookies(res) {
-    res.clearCookie('access_token')
-    res.clearCookie('refresh_token')
+    const isProd = isProduction()
+
+    res.clearCookie('access_token', {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: 'strict',
+        path: '/'
+    })
+
+    res.clearCookie('refresh_token', {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: 'strict',
+        path: '/'
+    })
 }
 
 export default {

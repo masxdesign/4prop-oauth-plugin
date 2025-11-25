@@ -87,8 +87,7 @@ export default {
     accessSecret: 'your-access-secret',
     refreshSecret: 'your-refresh-secret',
     accessExpiry: '15m',      // optional
-    refreshExpiry: '7d',      // optional
-    production: false         // optional
+    refreshExpiry: '7d'       // optional
   },
   session: {
     secret: 'your-session-secret'
@@ -132,8 +131,6 @@ app.use('/api/auth', authRouter)
 
 app.listen(3000)
 ```
-
-**Note:** Environment variables are still supported as fallback if no config is provided.
 
 ---
 
@@ -205,10 +202,11 @@ app.get('/api/protected', authenticate, (req, res) => {
   accessSecret: 'your-access-secret',   // required
   refreshSecret: 'your-refresh-secret', // required
   accessExpiry: '15m',                  // optional, default: '15m'
-  refreshExpiry: '7d',                  // optional, default: '7d'
-  production: false                     // optional, affects secure cookie flag
+  refreshExpiry: '7d'                   // optional, default: '7d'
 }
 ```
+
+**Note:** Cookie security settings (secure flag) are determined by `NODE_ENV=production`.
 
 ### OAuth Config
 
@@ -230,34 +228,6 @@ app.get('/api/protected', authenticate, (req, res) => {
     callbackURL: '/api/auth/linkedin/callback'  // optional
   }
 }
-```
-
-### Environment Variables (Fallback)
-
-If no config is provided, the package falls back to environment variables:
-
-```env
-# JWT
-JWT_ACCESS_SECRET=your-secret
-JWT_REFRESH_SECRET=your-refresh-secret
-JWT_ACCESS_EXPIRY=15m
-JWT_REFRESH_EXPIRY=7d
-NODE_ENV=production
-
-# Database
-DB_HOST=localhost
-DB_PORT=1433
-DB_USER=sa
-DB_PASSWORD=yourpassword
-DB_NAME=yourdatabase
-
-# OAuth
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-MICROSOFT_CLIENT_ID=...
-MICROSOFT_CLIENT_SECRET=...
-LINKEDIN_CLIENT_ID=...
-LINKEDIN_CLIENT_SECRET=...
 ```
 
 ---
