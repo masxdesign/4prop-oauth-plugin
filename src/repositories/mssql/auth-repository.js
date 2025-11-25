@@ -1,5 +1,6 @@
 import { getPool, setPoolConfig } from './pool.js'
-import bcrypt from 'bcryptjs'
+import phpPassword from 'node-php-password'
+import sql from 'mssql'
 
 /** Reference MSSQL implementation of auth repository */
 export default class MSSQLAuthRepository {
@@ -7,6 +8,16 @@ export default class MSSQLAuthRepository {
         if (dbConfig) {
             setPoolConfig(dbConfig)
         }
+    }
+
+    /**
+     * Generate CRC32 hash from email (PHP-compatible)
+     * @param {string} email
+     * @returns {number} CRC32 hash
+     */
+    generateHash(email) {
+        const crc32 = require('crc-32')
+        return crc32.str(email) >>> 0 // Convert to unsigned 32-bit integer
     }
 
     async findUserByEmail(email) {
@@ -31,9 +42,25 @@ export default class MSSQLAuthRepository {
     async createUser(userData) {
         const pool = await getPool()
 
-        // Hash password if provided
+        // Hash password using PHP-compatible method if provided
         const password = userData.password
-            ? await bcrypt.hash(userData.password, 10)
+            ? phpPassword.hash(userData.password)
+            : null
+
+        // Generate hash field using CRC32 of email (same as PHP)
+        const emailHash = this.generateHash(userData.email)
+
+        // Check if negotiator exists with this email
+        const negotiatorResult = await pool.request()
+            .input('email', sql.VarChar(75), userData.email)
+            .query(`
+                SELECT TOP 1 [NID]
+                FROM a_rpNegotiator
+                WHERE [email] = @email
+            `)
+
+        const negotiatorId = negotiatorResult.recordset.length > 0
+            ? negotiatorResult.recordset[0].NID
             : null
 
         const result = await pool.request()
@@ -44,10 +71,12 @@ export default class MSSQLAuthRepository {
             .input('provider', userData.provider || null)
             .input('oauthId', userData.oauthId || null)
             .input('avatar', userData.avatar || null)
+            .input('hash', emailHash)
+            .input('negId', negotiatorId)
             .query(`
-                INSERT INTO a_rcUsers (email, password, first, last, oauth_provider, oauth_id, avatar)
+                INSERT INTO a_rcUsers (email, password, first, last, oauth_provider, oauth_id, avatar, hash, neg_id)
                 OUTPUT INSERTED.*
-                VALUES (@email, @password, @first, @last, @provider, @oauthId, @avatar)
+                VALUES (@email, @password, @first, @last, @provider, @oauthId, @avatar, @hash, @negId)
             `)
 
         return result.recordset[0]
@@ -86,7 +115,8 @@ export default class MSSQLAuthRepository {
             throw new Error('Invalid credentials')
         }
 
-        const isValid = await bcrypt.compare(password, user.password)
+        // Use PHP-compatible password verification
+        const isValid = phpPassword.verify(password, user.password)
         if (!isValid) {
             throw new Error('Invalid credentials')
         }
@@ -98,7 +128,19 @@ export default class MSSQLAuthRepository {
         const pool = await getPool()
         const result = await pool.request()
             .input('userId', userId)
-            .query('SELECT * FROM a_rcUsers WHERE id = @userId')
+            .query(`
+                SELECT 
+                    [id],
+                    [first] [firstname],
+                    [last] [surname],
+                    [email],
+                    [oauth_provider],
+                    [oauth_id],
+                    [avatar],
+                    [last_login],
+                    [neg_id]
+                FROM a_rcUsers WHERE id = @userId
+            `)
 
         return result.recordset[0] || null
     }
