@@ -71,6 +71,7 @@ export function setTokenCookies(res, tokens) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 15 * 60 * 1000 // 15 minutes
     })
 
@@ -78,6 +79,7 @@ export function setTokenCookies(res, tokens) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     })
 }
@@ -89,6 +91,7 @@ export function setAccessTokenCookie(res, accessToken) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'strict',
+        path: '/',
         maxAge: 15 * 60 * 1000
     })
 }
@@ -99,13 +102,15 @@ export function clearTokenCookies(res) {
     res.clearCookie('access_token', {
         httpOnly: true,
         secure: isProd,
-        sameSite: 'strict'
+        sameSite: 'strict',
+        path: '/'
     })
 
     res.clearCookie('refresh_token', {
         httpOnly: true,
         secure: isProd,
-        sameSite: 'strict'
+        sameSite: 'strict',
+        path: '/'
     })
 }
 
