@@ -165,9 +165,6 @@ export default function createAuthRouter(authRepository, config = {}) {
         try {
             const user = await authRepository.getUserById(req.user.userId)
 
-            console.log(user, req);
-            
-
             if (!user) {
                 return res.status(404).json({ error: 'User not found' })
             }
@@ -182,6 +179,27 @@ export default function createAuthRouter(authRepository, config = {}) {
     router.post('/logout', (req, res) => {
         jwt.clearTokenCookies(res)
         res.json({ success: true })
+    })
+
+    // Get access token for cross-domain use
+    router.get('/access-token', authenticate, (req, res) => {
+        try {
+            // Extract the access token from the httpOnly cookie
+            const accessToken = req.cookies.access_token
+
+            if (!accessToken) {
+                return res.status(401).json({ error: 'No access token available' })
+            }
+
+            // Return the token with metadata
+            res.json({
+                access_token: accessToken,
+                token_type: 'Bearer',
+                expires_in: 900 // 15 minutes in seconds
+            })
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to retrieve access token' })
+        }
     })
 
     return router
