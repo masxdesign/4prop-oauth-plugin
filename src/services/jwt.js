@@ -33,9 +33,16 @@ function getRefreshExpiry() {
     return jwtConfig.refreshExpiry
 }
 
+function buildUserClaims(user) {
+    const claims = { userId: user.id, email: user.email }
+    if (user.role !== undefined && user.role !== null) claims.role = user.role
+    if (user.neg_id !== undefined && user.neg_id !== null) claims.neg_id = user.neg_id
+    return claims
+}
+
 export function generateAccessToken(user) {
     return jwt.sign(
-        { userId: user.id, email: user.email },
+        buildUserClaims(user),
         getAccessSecret(),
         { expiresIn: getAccessExpiry() }
     )
@@ -53,6 +60,39 @@ export function generateTokens(user) {
     return {
         accessToken: generateAccessToken(user),
         refreshToken: generateRefreshToken(user)
+    }
+}
+
+export function generateImpersonationAccessToken(targetUser, adminUser) {
+    return jwt.sign(
+        {
+            ...buildUserClaims(targetUser),
+            impersonating: true,
+            adminUserId: adminUser.id,
+            adminEmail: adminUser.email
+        },
+        getAccessSecret(),
+        { expiresIn: getAccessExpiry() }
+    )
+}
+
+export function generateImpersonationRefreshToken(targetUser, adminUser) {
+    return jwt.sign(
+        {
+            userId: targetUser.id,
+            impersonating: true,
+            adminUserId: adminUser.id,
+            adminEmail: adminUser.email
+        },
+        getRefreshSecret(),
+        { expiresIn: getRefreshExpiry() }
+    )
+}
+
+export function generateImpersonationTokens(targetUser, adminUser) {
+    return {
+        accessToken: generateImpersonationAccessToken(targetUser, adminUser),
+        refreshToken: generateImpersonationRefreshToken(targetUser, adminUser)
     }
 }
 
@@ -119,6 +159,9 @@ export default {
     generateAccessToken,
     generateRefreshToken,
     generateTokens,
+    generateImpersonationAccessToken,
+    generateImpersonationRefreshToken,
+    generateImpersonationTokens,
     verifyAccessToken,
     verifyRefreshToken,
     setTokenCookies,

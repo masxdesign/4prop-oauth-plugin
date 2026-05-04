@@ -6,6 +6,18 @@ import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2'
 import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
 
+// Role bitmask constants - aligned with PHP/4prop and bizchat dual-auth
+export const ROLES = {
+    USER: 2,
+    AUTHOR: 4,
+    ADMIN: 8,
+    SEO_ADMIN: 16,
+    EACH: 32,
+    ADVERTISER: 64
+}
+
+const hasRole = (roleMask, role) => ((roleMask || 0) & role) === role
+
 let isPassportConfigured = false
 let oauthConfig = {}
 let jwtConfig = {}
@@ -151,7 +163,18 @@ export default function createAuthRouter(authRepository, config = {}) {
             }
 
             const decoded = jwt.verifyRefreshToken(refreshToken)
-            const accessToken = jwt.generateAccessToken({ id: decoded.userId, email: decoded.email })
+            const targetUser = await authRepository.getUserById(decoded.userId)
+
+            if (!targetUser) {
+                return res.status(401).json({ error: 'User not found' })
+            }
+
+            const accessToken = decoded.impersonating
+                ? jwt.generateImpersonationAccessToken(targetUser, {
+                    id: decoded.adminUserId,
+                    email: decoded.adminEmail
+                })
+                : jwt.generateAccessToken(targetUser)
 
             jwt.setAccessTokenCookie(res, accessToken)
             res.json({ success: true })
@@ -169,7 +192,25 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(404).json({ error: 'User not found' })
             }
 
-            res.json({ user: sanitizeUser(user) })
+            const payload = {
+                ...sanitizeUser(user),
+                impersonating: !!req.user.impersonating
+            }
+
+            if (req.user.impersonating && req.user.adminUserId) {
+                const adminUser = await authRepository.getUserById(req.user.adminUserId)
+                if (adminUser) {
+                    payload.originalUser = {
+                        id: adminUser.id,
+                        email: adminUser.email,
+                        firstname: adminUser.firstname,
+                        surname: adminUser.surname,
+                        neg_id: adminUser.neg_id ?? null
+                    }
+                }
+            }
+
+            res.json({ user: payload })
         } catch (error) {
             res.status(500).json({ error: 'Failed to fetch user' })
         }
@@ -199,6 +240,96 @@ export default function createAuthRouter(authRepository, config = {}) {
             })
         } catch (error) {
             res.status(500).json({ error: 'Failed to retrieve access token' })
+        }
+    })
+
+    // Start impersonating a target user. Requires the caller to hold ROLE_EACH on
+    // their *original* admin account (the adminUserId claim if already impersonating,
+    // otherwise userId). targetNegId provisions a_rcUsers row if missing.
+    router.post('/impersonate', authenticate, async (req, res) => {
+        try {
+            const isCurrentlyImpersonating = !!req.user.impersonating
+            const adminUserId = isCurrentlyImpersonating
+                ? req.user.adminUserId
+                : req.user.userId
+
+            if (!adminUserId) {
+                return res.status(401).json({ error: 'Admin user not identified in token' })
+            }
+
+            const adminUser = await authRepository.getUserById(adminUserId)
+            if (!adminUser) {
+                return res.status(401).json({ error: 'Admin user not found' })
+            }
+
+            if (!hasRole(adminUser.role, ROLES.EACH)) {
+                return res.status(403).json({ error: 'EACH role required' })
+            }
+
+            const { targetUserId, targetNegId } = req.body || {}
+            if (!targetUserId && !targetNegId) {
+                return res.status(400).json({ error: 'targetUserId or targetNegId is required' })
+            }
+
+            const targetUser = targetNegId
+                ? await authRepository.getOrCreateUserByNegId(targetNegId)
+                : await authRepository.getUserById(targetUserId)
+
+            if (!targetUser) {
+                return res.status(404).json({ error: 'Target user not found' })
+            }
+
+            if (hasRole(targetUser.role, ROLES.EACH)) {
+                return res.status(403).json({ error: 'Cannot impersonate EACH users' })
+            }
+
+            const tokens = jwt.generateImpersonationTokens(targetUser, adminUser)
+            jwt.setTokenCookies(res, tokens)
+
+            res.json({
+                token: tokens.accessToken,
+                impersonating: true,
+                targetUser: sanitizeUser(targetUser),
+                originalUser: {
+                    id: adminUser.id,
+                    email: adminUser.email,
+                    firstname: adminUser.firstname,
+                    surname: adminUser.surname,
+                    neg_id: adminUser.neg_id ?? null
+                }
+            })
+        } catch (error) {
+            res.status(500).json({ error: error.message || 'Failed to impersonate' })
+        }
+    })
+
+    // Exit impersonation, restoring the admin's normal session.
+    router.post('/impersonate/exit', authenticate, async (req, res) => {
+        try {
+            if (!req.user.impersonating) {
+                return res.status(400).json({ error: 'Not currently impersonating' })
+            }
+
+            const adminUserId = req.user.adminUserId
+            if (!adminUserId) {
+                return res.status(400).json({ error: 'Admin user ID not found in token' })
+            }
+
+            const adminUser = await authRepository.getUserById(adminUserId)
+            if (!adminUser) {
+                return res.status(404).json({ error: 'Admin user not found' })
+            }
+
+            const tokens = jwt.generateTokens(adminUser)
+            jwt.setTokenCookies(res, tokens)
+
+            res.json({
+                token: tokens.accessToken,
+                impersonating: false,
+                user: sanitizeUser(adminUser)
+            })
+        } catch (error) {
+            res.status(500).json({ error: error.message || 'Failed to exit impersonation' })
         }
     })
 

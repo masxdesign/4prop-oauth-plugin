@@ -30,11 +30,13 @@ export default class MSSQLAuthRepository {
                     [first] [firstname],
                     [last] [surname],
                     [email],
+                    [password],
                     [oauth_provider],
                     [oauth_id],
                     [avatar],
                     [last_login],
-                    [neg_id]
+                    [neg_id],
+                    [role]
                 FROM a_rcUsers WHERE email = @email
             `)
 
@@ -56,7 +58,8 @@ export default class MSSQLAuthRepository {
                     [oauth_id],
                     [avatar],
                     [last_login],
-                    [neg_id]
+                    [neg_id],
+                    [role]
                 FROM a_rcUsers WHERE oauth_provider = @provider AND oauth_id = @oauthId
             `)
 
@@ -153,7 +156,7 @@ export default class MSSQLAuthRepository {
         const result = await pool.request()
             .input('userId', userId)
             .query(`
-                SELECT 
+                SELECT
                     [id],
                     [first] [firstname],
                     [last] [surname],
@@ -162,11 +165,60 @@ export default class MSSQLAuthRepository {
                     [oauth_id],
                     [avatar],
                     [last_login],
-                    [neg_id]
+                    [neg_id],
+                    [role]
                 FROM a_rcUsers WHERE id = @userId
             `)
 
         return result.recordset[0] || null
+    }
+
+    async getUserByNegId(negId) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('negId', sql.VarChar(20), negId)
+            .query(`
+                SELECT
+                    [id],
+                    [first] [firstname],
+                    [last] [surname],
+                    [email],
+                    [oauth_provider],
+                    [oauth_id],
+                    [avatar],
+                    [last_login],
+                    [neg_id],
+                    [role]
+                FROM a_rcUsers WHERE neg_id = @negId
+            `)
+
+        return result.recordset[0] || null
+    }
+
+    /**
+     * Get an a_rcUsers row by neg_id, provisioning one with role=ROLE_EACH (32) if absent.
+     * Mirrors the bizchat enquiry provisioning pattern (see resolveAgentUserIds.js)
+     * and the PHP getUserInsertEACHAgent equivalent.
+     */
+    async getOrCreateUserByNegId(negId) {
+        const existing = await this.getUserByNegId(negId)
+        if (existing) return existing
+
+        const pool = await getPool()
+        const insertResult = await pool.request()
+            .input('negId', sql.VarChar(20), negId)
+            .query(`
+                INSERT INTO a_rcUsers (neg_id, role)
+                OUTPUT CAST(INSERTED.id AS BIGINT) AS id
+                VALUES (@negId, 32)
+            `)
+
+        const newId = insertResult.recordset[0]?.id
+        if (!newId) {
+            throw new Error(`Failed to provision a_rcUsers row for neg_id=${negId}`)
+        }
+
+        return this.getUserById(newId)
     }
 
     async findOrCreateUser(profile) {
