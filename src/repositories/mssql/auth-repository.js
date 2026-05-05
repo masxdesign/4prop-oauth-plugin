@@ -157,17 +157,22 @@ export default class MSSQLAuthRepository {
             .input('userId', userId)
             .query(`
                 SELECT
-                    [id],
-                    [first] [firstname],
-                    [last] [surname],
-                    [email],
-                    [oauth_provider],
-                    [oauth_id],
-                    [avatar],
-                    [last_login],
-                    [neg_id],
-                    [role]
-                FROM a_rcUsers WHERE id = @userId
+                    u.[id],
+                    COALESCE(u.[first], n.[firstname]) [firstname],
+                    COALESCE(u.[last], n.[surname]) [surname],
+                    COALESCE(u.[email], n.[email]) [email],
+                    u.[oauth_provider],
+                    u.[oauth_id],
+                    COALESCE(u.[avatar], n.[picture]) [avatar],
+                    u.[last_login],
+                    u.[neg_id],
+                    u.[role],
+                    n.[phone],
+                    c.[name] [company]
+                FROM a_rcUsers u
+                LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
+                LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
+                WHERE u.[id] = @userId
             `)
 
         return result.recordset[0] || null
@@ -179,17 +184,22 @@ export default class MSSQLAuthRepository {
             .input('negId', sql.VarChar(20), negId)
             .query(`
                 SELECT
-                    [id],
-                    [first] [firstname],
-                    [last] [surname],
-                    [email],
-                    [oauth_provider],
-                    [oauth_id],
-                    [avatar],
-                    [last_login],
-                    [neg_id],
-                    [role]
-                FROM a_rcUsers WHERE neg_id = @negId
+                    u.[id],
+                    COALESCE(u.[first], n.[firstname]) [firstname],
+                    COALESCE(u.[last], n.[surname]) [surname],
+                    COALESCE(u.[email], n.[email]) [email],
+                    u.[oauth_provider],
+                    u.[oauth_id],
+                    COALESCE(u.[avatar], n.[picture]) [avatar],
+                    u.[last_login],
+                    u.[neg_id],
+                    u.[role],
+                    n.[phone],
+                    c.[name] [company]
+                FROM a_rcUsers u
+                LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
+                LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
+                WHERE u.[neg_id] = @negId
             `)
 
         return result.recordset[0] || null

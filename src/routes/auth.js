@@ -262,8 +262,8 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(401).json({ error: 'Admin user not found' })
             }
 
-            if (!hasRole(adminUser.role, ROLES.EACH)) {
-                return res.status(403).json({ error: 'EACH role required' })
+            if (!hasRole(adminUser.role, ROLES.ADMIN)) {
+                return res.status(403).json({ error: 'Admin role required' })
             }
 
             const { targetUserId, targetNegId } = req.body || {}
@@ -279,8 +279,8 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(404).json({ error: 'Target user not found' })
             }
 
-            if (hasRole(targetUser.role, ROLES.EACH)) {
-                return res.status(403).json({ error: 'Cannot impersonate EACH users' })
+            if (hasRole(targetUser.role, ROLES.ADMIN)) {
+                return res.status(403).json({ error: 'Cannot impersonate admin users' })
             }
 
             const tokens = jwt.generateImpersonationTokens(targetUser, adminUser)
