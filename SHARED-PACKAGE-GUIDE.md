@@ -54,7 +54,8 @@ app.use(passport.initialize())
 const authRepo = new MSSQLAuthRepository(config.database)
 const authRouter = createAuthRouter(authRepo, {
   jwt: config.jwt,
-  oauth: config.oauth
+  oauth: config.oauth,
+  // Optional: cookieMode, cookies, resolveCookieMode — see @4prop/oauth README
 })
 app.use('/api/auth', authRouter)
 ```

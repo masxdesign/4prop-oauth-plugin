@@ -41,6 +41,14 @@ export default function createAuthRouter(authRepository, config = {}) {
 
     const router = express.Router()
 
+    jwt.setAuthCookieDefaults({
+        cookieMode: config.cookieMode ?? 'same-site',
+        cookies: config.cookies ?? {}
+    })
+    if (typeof config.resolveCookieMode === 'function') {
+        router.use(jwt.createCookieModeMiddleware(config.resolveCookieMode))
+    }
+
     // OAuth - Google
     router.get('/google', (req, res, next) => {
         const { returnTo } = req.query
@@ -134,16 +142,75 @@ export default function createAuthRouter(authRepository, config = {}) {
         }
     })
 
+    // Check whether an email belongs to an EACH agent (a_rpNegotiator row).
+    // Used by the register form to short-circuit before the user fills
+    // out the rest of the fields. Returns { isAgent: true|false }.
+    // Note: same information already leaks via /register's 409 response,
+    // so this endpoint doesn't expand the existing enumeration surface.
+    router.get('/check-agent-email', async (req, res) => {
+        try {
+            const email = typeof req.query.email === 'string' ? req.query.email.trim() : ''
+
+            if (!email) {
+                return res.status(400).json({ error: 'email query parameter is required' })
+            }
+
+            if (typeof authRepository.findNegotiatorByEmail !== 'function') {
+                // Repo doesn't support the lookup — fail open so registration
+                // still works on auth backends that don't implement this.
+                return res.json({ isAgent: false })
+            }
+
+            const negotiator = await authRepository.findNegotiatorByEmail(email)
+            res.json({ isAgent: !!negotiator })
+        } catch (error) {
+            res.status(500).json({ error: error.message })
+        }
+    })
+
     // Register
     router.post('/register', async (req, res) => {
         try {
-            const { email, password, first, last } = req.body
+            const { email, password, name, first, last, company } = req.body
 
             if (!email || !password) {
                 return res.status(400).json({ error: 'Email and password are required' })
             }
 
-            const user = await authRepository.createUser({ email, password, first, last })
+            // If this email belongs to an EACH agent, refuse and tell the
+            // frontend to redirect to the login flow with a notice. Avoids
+            // creating a duplicate non-agent record for someone who already
+            // has agent credentials.
+            if (typeof authRepository.findNegotiatorByEmail === 'function') {
+                const negotiator = await authRepository.findNegotiatorByEmail(email)
+                if (negotiator) {
+                    return res.status(409).json({
+                        error: 'This email is registered as an EACH agent. Sign in with your EACH credentials instead.',
+                        code: 'AGENT_EMAIL_EXISTS',
+                        email
+                    })
+                }
+            }
+
+            // Accept either explicit { first, last } or a single { name } that we split
+            let firstName = first
+            let lastName = last
+            if (!firstName && !lastName && typeof name === 'string') {
+                const trimmed = name.trim()
+                if (trimmed) {
+                    const parts = trimmed.split(/\s+/)
+                    firstName = parts.shift()
+                    lastName = parts.length ? parts.join(' ') : null
+                }
+            }
+
+            const user = await authRepository.createUser({
+                email,
+                password,
+                first: firstName,
+                last: lastName,
+                company: company || null
+            })
             const tokens = jwt.generateTokens(user)
             jwt.setTokenCookies(res, tokens)
 

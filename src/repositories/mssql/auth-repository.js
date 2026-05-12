@@ -1,6 +1,7 @@
 import { getPool, setPoolConfig } from './pool.js'
 import phpPassword from 'node-php-password'
 import sql from 'mssql'
+import crc32 from 'crc-32'
 
 /** Reference MSSQL implementation of auth repository */
 export default class MSSQLAuthRepository {
@@ -16,8 +17,25 @@ export default class MSSQLAuthRepository {
      * @returns {number} CRC32 hash
      */
     generateHash(email) {
-        const crc32 = require('crc-32')
         return crc32.str(email) >>> 0 // Convert to unsigned 32-bit integer
+    }
+
+    /**
+     * Look up an a_rpNegotiator row by email. Returns null if no agent
+     * has registered this address. Used by /register to redirect agents
+     * to the login flow instead of creating a duplicate user.
+     */
+    async findNegotiatorByEmail(email) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('email', sql.VarChar(75), email)
+            .query(`
+                SELECT TOP 1 [NID], [firstname], [surname], [email]
+                FROM a_rpNegotiator
+                WHERE [email] = @email
+            `)
+
+        return result.recordset[0] || null
     }
 
     async findUserByEmail(email) {
@@ -77,33 +95,31 @@ export default class MSSQLAuthRepository {
         // Generate hash field using CRC32 of email (same as PHP)
         const emailHash = this.generateHash(userData.email)
 
-        // Check if negotiator exists with this email
-        const negotiatorResult = await pool.request()
-            .input('email', sql.VarChar(75), userData.email)
-            .query(`
-                SELECT TOP 1 [NID]
-                FROM a_rpNegotiator
-                WHERE [email] = @email
-            `)
-
-        const negotiatorId = negotiatorResult.recordset.length > 0
-            ? negotiatorResult.recordset[0].NID
-            : null
+        // For OAuth signups (no password), auto-link to a negotiator if the
+        // OAuth email matches one — preserves existing single-sign-on behavior
+        // for agents. Password /register short-circuits agent emails upstream
+        // in the route handler, so this branch only matters for OAuth.
+        let negotiatorId = null
+        if (!password) {
+            const negotiator = await this.findNegotiatorByEmail(userData.email)
+            negotiatorId = negotiator ? negotiator.NID : null
+        }
 
         const result = await pool.request()
             .input('email', userData.email)
             .input('password', password)
             .input('first', userData.first || null)
             .input('last', userData.last || null)
+            .input('company', userData.company || null)
             .input('provider', userData.provider || null)
             .input('oauthId', userData.oauthId || null)
             .input('avatar', userData.avatar || null)
             .input('hash', emailHash)
             .input('negId', negotiatorId)
             .query(`
-                INSERT INTO a_rcUsers (email, password, first, last, oauth_provider, oauth_id, avatar, hash, neg_id)
+                INSERT INTO a_rcUsers (email, password, first, last, company, oauth_provider, oauth_id, avatar, hash, neg_id)
                 OUTPUT INSERTED.*
-                VALUES (@email, @password, @first, @last, @provider, @oauthId, @avatar, @hash, @negId)
+                VALUES (@email, @password, @first, @last, @company, @provider, @oauthId, @avatar, @hash, @negId)
             `)
 
         return result.recordset[0]
@@ -168,7 +184,7 @@ export default class MSSQLAuthRepository {
                     u.[neg_id],
                     u.[role],
                     n.[phone],
-                    c.[name] [company]
+                    COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
                 LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
                 LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
@@ -195,7 +211,7 @@ export default class MSSQLAuthRepository {
                     u.[neg_id],
                     u.[role],
                     n.[phone],
-                    c.[name] [company]
+                    COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
                 LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
                 LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]

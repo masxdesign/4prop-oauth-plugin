@@ -125,7 +125,10 @@ app.use(passport.initialize())
 const authRepo = new MSSQLAuthRepository(config.database)
 const authRouter = createAuthRouter(authRepo, {
     jwt: config.jwt,
-    oauth: config.oauth
+    oauth: config.oauth,
+    cookieMode: 'same-site',
+    // cookies: { path: '/' },
+    // resolveCookieMode(req) { ... }
 })
 app.use('/api/auth', authRouter)
 
@@ -206,7 +209,26 @@ app.get('/api/protected', authenticate, (req, res) => {
 }
 ```
 
-**Note:** Cookie security settings (secure flag) are determined by `NODE_ENV=production`.
+**Note:** Default auth cookies use `SameSite=strict` (see **Auth cookie options** below). With `cookieMode: 'cross-origin-spa'` or per-request resolution, `secure` is always `true` for that mode.
+
+### Auth cookie options (`createAuthRouter`)
+
+Pass optional fields on the second argument alongside `jwt` and `oauth`:
+
+| Option | Description |
+|--------|-------------|
+| `cookieMode` | `'same-site'` (default) or `'cross-origin-spa'` — static preset when no per-request resolver applies. |
+| `cookies` | Optional overrides merged on top of the preset: `httpOnly`, `secure`, `sameSite`, `domain`, `path`, `maxAgeAccess`, `maxAgeRefresh`. |
+| `resolveCookieMode` | `(req) => 'same-site' \| 'cross-origin-spa' \| undefined` — if provided, runs as Express middleware on the auth router. Return `undefined` to fall back to static `cookieMode`. Uses `AsyncLocalStorage` so concurrent requests do not leak modes. **Use an allowlist** (e.g. compare `req.get('origin')` to trusted origins); do not trust unchecked client-only headers. |
+
+**Presets**
+
+- **`same-site`:** `SameSite=strict`, `Secure` when `NODE_ENV=production`, `Path=/`.
+- **`cross-origin-spa`:** `SameSite=None`, `Secure=true` always (required for `None`). Local HTTP without TLS cannot use this mode reliably for browser cookies.
+
+**Programmatic imports** (advanced): `setAuthCookieDefaults`, `createCookieModeMiddleware` are also available from `@4prop/oauth/jwt`.
+
+**PropertyPub server:** set `AUTH_CROSS_ORIGIN_SPAS` to a comma-separated list of full SPA origins (e.g. `https://shop.example.com`) that should receive `cross-origin-spa` cookies; add the same origins to your CORS allowlist for credentialed requests.
 
 ### OAuth Config
 
