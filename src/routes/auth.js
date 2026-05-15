@@ -5,6 +5,12 @@ import { Strategy as MicrosoftStrategy } from 'passport-microsoft'
 import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2'
 import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
+import { generateEmailVerifyToken, hashEmailVerifyToken } from '../utils/emailVerifyToken.js'
+
+// Email-verification resend rate-limit knobs. Mirrors the migration docs in
+// the consuming app (007/008 in routes/migrations/).
+const RESEND_COOLDOWN_MS = 60 * 1000
+const RESEND_MAX_PER_24H = 5
 
 // Role bitmask constants - aligned with PHP/4prop and bizchat dual-auth
 export const ROLES = {
@@ -47,6 +53,37 @@ export default function createAuthRouter(authRepository, config = {}) {
     })
     if (typeof config.resolveCookieMode === 'function') {
         router.use(jwt.createCookieModeMiddleware(config.resolveCookieMode))
+    }
+
+    // Optional verification email sender. If provided, /register issues a
+    // token and calls this; /resend-verification can also dispatch. Shape:
+    //   async (user, plainToken, advertiserId) => void
+    // No-op when undefined — useful for tests and for consumers that don't
+    // need verification (the columns just stay NULL on those users).
+    const sendVerificationEmail = typeof config.sendVerificationEmail === 'function'
+        ? config.sendVerificationEmail
+        : null
+
+    /**
+     * Issue + persist + email a new verification token for `user`. Records
+     * the attempt for rate-limiting. Send is detached so the route response
+     * isn't blocked on SES; failures are logged.
+     *
+     * advertiserId is required when the route mounted a sender — it drives
+     * the verify-URL host. Caller routes validate this before calling.
+     *
+     * Returns the plaintext token (mostly useful for tests / logging).
+     */
+    async function issueAndSendVerifyEmail(user, advertiserId) {
+        const { plain, hash, expiresAt } = generateEmailVerifyToken()
+        await authRepository.setEmailVerifyToken(user.id, hash, expiresAt)
+        await authRepository.recordEmailVerifyAttempt(user.email)
+        if (sendVerificationEmail) {
+            Promise.resolve()
+                .then(() => sendVerificationEmail(user, plain, advertiserId))
+                .catch((err) => console.error('[verifyEmail] send failed for', user.email, err))
+        }
+        return plain
     }
 
     // OAuth - Google
@@ -171,10 +208,17 @@ export default function createAuthRouter(authRepository, config = {}) {
     // Register
     router.post('/register', async (req, res) => {
         try {
-            const { email, password, name, first, last, company } = req.body
+            const { email, password, name, first, last, company, advertiserId } = req.body
 
             if (!email || !password) {
                 return res.status(400).json({ error: 'Email and password are required' })
+            }
+            // advertiserId is required only when verification email sending is
+            // wired — the mailer needs it to build the correct verify URL host.
+            // Without verification wired we don't care, so registrations still
+            // work for any consumer that doesn't configure a sender.
+            if (sendVerificationEmail && advertiserId == null) {
+                return res.status(400).json({ error: 'advertiserId is required' })
             }
 
             // If this email belongs to an EACH agent, refuse and tell the
@@ -214,9 +258,110 @@ export default function createAuthRouter(authRepository, config = {}) {
             const tokens = jwt.generateTokens(user)
             jwt.setTokenCookies(res, tokens)
 
+            // Soft gate: user is already signed in. The verification email
+            // unlocks verify-required capabilities later. Skipped when the
+            // consumer didn't wire a sender.
+            if (sendVerificationEmail) {
+                try {
+                    await issueAndSendVerifyEmail(user, advertiserId)
+                } catch (err) {
+                    // Failure to enqueue the email shouldn't block registration —
+                    // the user can request a resend.
+                    console.error('[register] issueAndSendVerifyEmail failed:', err.message)
+                }
+            }
+
             res.json({ success: true, user: sanitizeUser(user) })
         } catch (error) {
             res.status(400).json({ error: error.message })
+        }
+    })
+
+    // Email verification — consume the token from the link in the verification
+    // email. Public: the user may or may not be signed in when they click. On
+    // success, marks the account verified and clears the token. Unknown /
+    // expired / already-consumed tokens all return the same 400 so we don't
+    // leak token-status information.
+    router.get('/verify-email', async (req, res) => {
+        try {
+            const { token } = req.query
+            if (!token || typeof token !== 'string') {
+                return res.status(400).json({ error: 'Missing token' })
+            }
+            if (typeof authRepository.consumeEmailVerifyToken !== 'function') {
+                return res.status(501).json({ error: 'Verification not supported by this auth backend' })
+            }
+            const tokenHash = hashEmailVerifyToken(token)
+            const verifiedUser = await authRepository.consumeEmailVerifyToken(tokenHash)
+            if (!verifiedUser) {
+                return res.status(400).json({ error: 'Invalid or expired token' })
+            }
+            res.json({ success: true })
+        } catch (error) {
+            console.error('Email verification error:', error)
+            res.status(500).json({ error: 'Verification failed' })
+        }
+    })
+
+    // Resend the verification email. Requires auth — caller must be signed in
+    // (the soft-gate flow gives every registrant a session). Rate-limited:
+    //   - reject if last send for this email was < 60s ago (429 with retryAfter)
+    //   - reject if >= 5 sends in the last 24h (429 with retryAfter)
+    //
+    // Requires advertiserId in the body so the resent email is branded to the
+    // advertiser site the user is currently looking at.
+    router.post('/resend-verification', authenticate, async (req, res) => {
+        try {
+            if (
+                typeof authRepository.getEmailVerifyResendStats !== 'function' ||
+                !sendVerificationEmail
+            ) {
+                return res.status(501).json({ error: 'Verification not supported' })
+            }
+
+            const { advertiserId } = req.body || {}
+            if (advertiserId == null) {
+                return res.status(400).json({ error: 'advertiserId is required' })
+            }
+
+            const user = await authRepository.getUserById(req.user.userId)
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' })
+            }
+            if (user.email_verified_at) {
+                // Already verified — surface plainly so the frontend can suppress
+                // the banner instead of looping on resend.
+                return res.status(409).json({ error: 'Email already verified' })
+            }
+
+            const { lastSentAt, last24hCount } = await authRepository.getEmailVerifyResendStats(user.email)
+            const now = Date.now()
+
+            if (lastSentAt) {
+                const since = now - new Date(lastSentAt).getTime()
+                if (since < RESEND_COOLDOWN_MS) {
+                    const retryAfter = Math.ceil((RESEND_COOLDOWN_MS - since) / 1000)
+                    res.setHeader('Retry-After', String(retryAfter))
+                    return res.status(429).json({ error: 'Please wait before requesting another email', retryAfter })
+                }
+            }
+
+            if (last24hCount >= RESEND_MAX_PER_24H) {
+                // 24h-cap exceeded. retryAfter is approximate — until the oldest
+                // attempt in the window ages out. A generic 1h hint is fine; we
+                // don't need the precise oldest_sent_at for UX.
+                res.setHeader('Retry-After', '3600')
+                return res.status(429).json({
+                    error: 'Too many verification emails — try again later',
+                    retryAfter: 3600,
+                })
+            }
+
+            await issueAndSendVerifyEmail(user, advertiserId)
+            res.json({ success: true })
+        } catch (error) {
+            console.error('Resend verification error:', error)
+            res.status(500).json({ error: 'Resend failed' })
         }
     })
 
@@ -404,8 +549,18 @@ export default function createAuthRouter(authRepository, config = {}) {
 }
 
 function sanitizeUser(user) {
-    const { password, ...sanitized } = user
-    return sanitized
+    const {
+        password,
+        email_verified_at,
+        email_verify_token_hash,
+        email_verify_token_expires_at,
+        ...sanitized
+    } = user
+    return {
+        ...sanitized,
+        // Derived boolean — the raw DATETIME never leaves the server.
+        emailVerified: !!email_verified_at,
+    }
 }
 
 /** Configure passport strategies - call once during app initialization */

@@ -54,7 +54,8 @@ export default class MSSQLAuthRepository {
                     [avatar],
                     [last_login],
                     [neg_id],
-                    [role]
+                    [role],
+                    [email_verified_at]
                 FROM a_rcUsers WHERE email = @email
             `)
 
@@ -77,7 +78,8 @@ export default class MSSQLAuthRepository {
                     [avatar],
                     [last_login],
                     [neg_id],
-                    [role]
+                    [role],
+                    [email_verified_at]
                 FROM a_rcUsers WHERE oauth_provider = @provider AND oauth_id = @oauthId
             `)
 
@@ -105,6 +107,12 @@ export default class MSSQLAuthRepository {
             negotiatorId = negotiator ? negotiator.NID : null
         }
 
+        // OAuth signups (provider set, no password) inherit the provider's
+        // email verification — write email_verified_at at insert time so
+        // verify-required capabilities work immediately. Email/password
+        // signups leave the column NULL; they must complete the verify flow.
+        const isOAuthSignup = !!userData.provider && !password
+
         const result = await pool.request()
             .input('email', userData.email)
             .input('password', password)
@@ -117,9 +125,21 @@ export default class MSSQLAuthRepository {
             .input('hash', emailHash)
             .input('negId', negotiatorId)
             .query(`
-                INSERT INTO a_rcUsers (email, password, first, last, company, oauth_provider, oauth_id, avatar, hash, neg_id)
-                OUTPUT INSERTED.*
-                VALUES (@email, @password, @first, @last, @company, @provider, @oauthId, @avatar, @hash, @negId)
+                INSERT INTO a_rcUsers (email, password, first, last, company, oauth_provider, oauth_id, avatar, hash, neg_id, email_verified_at)
+                OUTPUT
+                    INSERTED.id,
+                    INSERTED.email,
+                    INSERTED.first AS firstname,
+                    INSERTED.last  AS surname,
+                    INSERTED.company,
+                    INSERTED.oauth_provider,
+                    INSERTED.oauth_id,
+                    INSERTED.avatar,
+                    INSERTED.hash,
+                    INSERTED.neg_id,
+                    INSERTED.role,
+                    INSERTED.email_verified_at
+                VALUES (@email, @password, @first, @last, @company, @provider, @oauthId, @avatar, @hash, @negId, ${isOAuthSignup ? "SYSUTCDATETIME()" : "NULL"})
             `)
 
         return result.recordset[0]
@@ -183,6 +203,7 @@ export default class MSSQLAuthRepository {
                     u.[last_login],
                     u.[neg_id],
                     u.[role],
+                    u.[email_verified_at],
                     n.[phone],
                     COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
@@ -210,6 +231,7 @@ export default class MSSQLAuthRepository {
                     u.[last_login],
                     u.[neg_id],
                     u.[role],
+                    u.[email_verified_at],
                     n.[phone],
                     COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
@@ -267,5 +289,93 @@ export default class MSSQLAuthRepository {
         }
 
         return user
+    }
+
+    // ── Email verification ──────────────────────────────────────────────────
+
+    /**
+     * Write a verification token (hash + expiry) onto the user row. The plain
+     * token is never stored; the caller emails it. Overwrites any outstanding
+     * token — resend issues a fresh one and invalidates the previous link.
+     */
+    async setEmailVerifyToken(userId, tokenHash, expiresAt) {
+        const pool = await getPool()
+        await pool.request()
+            .input('userId', userId)
+            .input('tokenHash', sql.VarChar(64), tokenHash)
+            .input('expiresAt', sql.DateTime, expiresAt)
+            .query(`
+                UPDATE a_rcUsers
+                SET [email_verify_token_hash] = @tokenHash,
+                    [email_verify_token_expires_at] = @expiresAt
+                WHERE [id] = @userId
+            `)
+    }
+
+    /**
+     * Consume a verification token: find by hash, check unexpired and not
+     * already verified, mark verified and clear the token columns — all in a
+     * single atomic UPDATE. Returns { id, email } on success, or null if the
+     * hash is unknown, expired, or the account was already verified.
+     *
+     * Callers should treat all the null cases as the same 400 — we don't leak
+     * the "already verified" state to avoid token-status enumeration.
+     */
+    async consumeEmailVerifyToken(tokenHash) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('tokenHash', sql.VarChar(64), tokenHash)
+            .query(`
+                UPDATE a_rcUsers
+                SET [email_verified_at] = SYSUTCDATETIME(),
+                    [email_verify_token_hash] = NULL,
+                    [email_verify_token_expires_at] = NULL
+                OUTPUT INSERTED.id, INSERTED.email
+                WHERE [email_verify_token_hash] = @tokenHash
+                  AND [email_verify_token_expires_at] IS NOT NULL
+                  AND [email_verify_token_expires_at] > SYSUTCDATETIME()
+                  AND [email_verified_at] IS NULL
+            `)
+
+        return result.recordset[0] || null
+    }
+
+    /**
+     * Resend rate-limit lookup. Returns the most recent attempt timestamp and
+     * count of attempts in the last 24h for this email. The caller decides
+     * whether the 60s cooldown / 5-per-24h cap is exceeded.
+     */
+    async getEmailVerifyResendStats(email) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('email', sql.VarChar(75), email)
+            .query(`
+                SELECT
+                    MAX([sent_at]) AS lastSentAt,
+                    COUNT(*)       AS last24hCount
+                FROM a_rcEmailVerifyAttempts
+                WHERE [email] = @email
+                  AND [sent_at] > DATEADD(HOUR, -24, SYSUTCDATETIME())
+            `)
+
+        const row = result.recordset[0] || {}
+        return {
+            lastSentAt: row.lastSentAt || null,
+            last24hCount: row.last24hCount || 0,
+        }
+    }
+
+    /**
+     * Record a verification-email send. Append-only; older rows can be pruned
+     * by a separate maintenance job (not in this code path).
+     */
+    async recordEmailVerifyAttempt(email) {
+        const pool = await getPool()
+        await pool.request()
+            .input('email', sql.VarChar(75), email)
+            .query(`
+                INSERT INTO a_rcEmailVerifyAttempts ([email], [sent_at])
+                VALUES (@email, SYSUTCDATETIME())
+            `)
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@4prop/oauth",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Drop-in authentication plugin for Express.js",
   "type": "module",
   "main": "src/routes/auth.js",
@@ -8,7 +8,8 @@
     ".": "./src/routes/auth.js",
     "./middleware": "./src/middleware/authenticate.js",
     "./jwt": "./src/services/jwt.js",
-    "./mssql": "./src/repositories/mssql/auth-repository.js"
+    "./mssql": "./src/repositories/mssql/auth-repository.js",
+    "./email-verify-token": "./src/utils/emailVerifyToken.js"
   },
   "peerDependencies": {
     "express": "^4.18.0",
