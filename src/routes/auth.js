@@ -1,16 +1,25 @@
 import express from 'express'
 import passport from 'passport'
+import phpPassword from 'node-php-password'
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20'
 import { Strategy as MicrosoftStrategy } from 'passport-microsoft'
 import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2'
 import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
-import { generateEmailVerifyToken, hashEmailVerifyToken } from '../utils/emailVerifyToken.js'
+import { generateToken, hashToken } from '../utils/singleUseToken.js'
 
-// Email-verification resend rate-limit knobs. Mirrors the migration docs in
-// the consuming app (007/008 in routes/migrations/).
+// Resend rate-limit knobs — same for both verify and reset flows.
 const RESEND_COOLDOWN_MS = 60 * 1000
 const RESEND_MAX_PER_24H = 5
+
+// Password-reset tokens are more sensitive than verify tokens, so they live
+// for less time (1h vs 24h).
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
+
+// Minimum password length on reset. Matches the register form's client-side
+// rule. Tightening later would need a one-time forced reset for users below
+// the new floor.
+const MIN_PASSWORD_LENGTH = 6
 
 // Role bitmask constants - aligned with PHP/4prop and bizchat dual-auth
 export const ROLES = {
@@ -57,31 +66,62 @@ export default function createAuthRouter(authRepository, config = {}) {
 
     // Optional verification email sender. If provided, /register issues a
     // token and calls this; /resend-verification can also dispatch. Shape:
-    //   async (user, plainToken, advertiserId) => void
-    // No-op when undefined — useful for tests and for consumers that don't
-    // need verification (the columns just stay NULL on those users).
+    //   async (user, plainToken, advertiserId, delivery?) => void
+    // `delivery` comes from resolveAuthEmailDelivery when that hook is wired.
     const sendVerificationEmail = typeof config.sendVerificationEmail === 'function'
         ? config.sendVerificationEmail
         : null
+
+    // Optional password-reset email sender. If provided, /forgot-password
+    // issues a token and calls this; /reset-password consumes it.
+    const sendPasswordResetEmail = typeof config.sendPasswordResetEmail === 'function'
+        ? config.sendPasswordResetEmail
+        : null
+
+    // Optional sandbox delivery policy for auth emails. Called before each
+    // verify/reset send so the host app controls who receives mail in sandbox
+    // mode without forking the mailer. Shape:
+    //   ({ kind: 'verify'|'reset', user, advertiserId }) => delivery
+    const resolveAuthEmailDelivery = typeof config.resolveAuthEmailDelivery === 'function'
+        ? config.resolveAuthEmailDelivery
+        : null
+
+    function resolveDelivery(kind, user, advertiserId) {
+        return resolveAuthEmailDelivery?.({ kind, user, advertiserId }) ?? {}
+    }
 
     /**
      * Issue + persist + email a new verification token for `user`. Records
      * the attempt for rate-limiting. Send is detached so the route response
      * isn't blocked on SES; failures are logged.
-     *
-     * advertiserId is required when the route mounted a sender — it drives
-     * the verify-URL host. Caller routes validate this before calling.
-     *
-     * Returns the plaintext token (mostly useful for tests / logging).
      */
     async function issueAndSendVerifyEmail(user, advertiserId) {
-        const { plain, hash, expiresAt } = generateEmailVerifyToken()
+        const { plain, hash, expiresAt } = generateToken()
         await authRepository.setEmailVerifyToken(user.id, hash, expiresAt)
-        await authRepository.recordEmailVerifyAttempt(user.email)
+        await authRepository.recordAuthEmailAttempt(user.email, 'verify')
         if (sendVerificationEmail) {
+            const delivery = resolveDelivery('verify', user, advertiserId)
             Promise.resolve()
-                .then(() => sendVerificationEmail(user, plain, advertiserId))
+                .then(() => sendVerificationEmail(user, plain, advertiserId, delivery))
                 .catch((err) => console.error('[verifyEmail] send failed for', user.email, err))
+        }
+        return plain
+    }
+
+    /**
+     * Issue + persist + email a new password-reset token. Detached send
+     * (failures logged). The token TTL is 1h — shorter than verification
+     * because the reset link grants control of the password.
+     */
+    async function issueAndSendResetEmail(user, advertiserId) {
+        const { plain, hash, expiresAt } = generateToken({ ttlMs: PASSWORD_RESET_TTL_MS })
+        await authRepository.setPasswordResetToken(user.id, hash, expiresAt)
+        await authRepository.recordAuthEmailAttempt(user.email, 'reset')
+        if (sendPasswordResetEmail) {
+            const delivery = resolveDelivery('reset', user, advertiserId)
+            Promise.resolve()
+                .then(() => sendPasswordResetEmail(user, plain, advertiserId, delivery))
+                .catch((err) => console.error('[resetPassword] send failed for', user.email, err))
         }
         return plain
     }
@@ -291,7 +331,7 @@ export default function createAuthRouter(authRepository, config = {}) {
             if (typeof authRepository.consumeEmailVerifyToken !== 'function') {
                 return res.status(501).json({ error: 'Verification not supported by this auth backend' })
             }
-            const tokenHash = hashEmailVerifyToken(token)
+            const tokenHash = hashToken(token)
             const verifiedUser = await authRepository.consumeEmailVerifyToken(tokenHash)
             if (!verifiedUser) {
                 return res.status(400).json({ error: 'Invalid or expired token' })
@@ -362,6 +402,105 @@ export default function createAuthRouter(authRepository, config = {}) {
         } catch (error) {
             console.error('Resend verification error:', error)
             res.status(500).json({ error: 'Resend failed' })
+        }
+    })
+
+    // Request a password-reset email. Public — the user has no session yet
+    // since they're trying to recover access. Body: { email, advertiserId }.
+    //
+    // Enumeration-safe: always returns 200 success regardless of whether the
+    // email matches a user. Bot can't tell from the response which addresses
+    // have accounts. Rate-limiting is keyed on the supplied email, so spamming
+    // a single address is bounded even when no account exists.
+    router.post('/forgot-password', async (req, res) => {
+        try {
+            if (
+                typeof authRepository.setPasswordResetToken !== 'function' ||
+                !sendPasswordResetEmail
+            ) {
+                return res.status(501).json({ error: 'Password reset not supported' })
+            }
+
+            const { email, advertiserId } = req.body || {}
+            if (!email || typeof email !== 'string') {
+                return res.status(400).json({ error: 'Email is required' })
+            }
+            if (advertiserId == null) {
+                return res.status(400).json({ error: 'advertiserId is required' })
+            }
+
+            // Rate-limit BEFORE the user lookup so we don't leak existence via
+            // timing differences. Cooldown / cap apply to the supplied email
+            // regardless of whether it matches a user.
+            const { lastSentAt, last24hCount } =
+                await authRepository.getAuthEmailResendStats(email, 'reset')
+            const now = Date.now()
+            if (lastSentAt) {
+                const since = now - new Date(lastSentAt).getTime()
+                if (since < RESEND_COOLDOWN_MS) {
+                    // Still tell the client "success" — we don't want timing
+                    // attacks to reveal account state. The user gets no email
+                    // this time; their next request after the cooldown wins.
+                    return res.json({ success: true })
+                }
+            }
+            if (last24hCount >= RESEND_MAX_PER_24H) {
+                return res.json({ success: true })
+            }
+
+            const user = await authRepository.findUserByEmail(email)
+            if (user && user.password) {
+                // Only password-bearing accounts can be reset. OAuth-only
+                // users (no password column) can't recover via this flow —
+                // they sign in through their provider.
+                await issueAndSendResetEmail(user, advertiserId)
+            }
+            // Always 200, whether we sent or not.
+            res.json({ success: true })
+        } catch (error) {
+            console.error('Forgot-password error:', error)
+            // Still pretend success to the client to avoid enumeration; log
+            // the real error for ops.
+            res.json({ success: true })
+        }
+    })
+
+    // Consume a reset token + set the new password. Public.
+    // Body: { token, password }.
+    //
+    // On success: signs the user in (sets JWT cookies) AND marks the email
+    // verified — clicking the link proves inbox ownership.
+    router.post('/reset-password', async (req, res) => {
+        try {
+            if (typeof authRepository.consumePasswordResetToken !== 'function') {
+                return res.status(501).json({ error: 'Password reset not supported' })
+            }
+
+            const { token, password } = req.body || {}
+            if (!token || typeof token !== 'string') {
+                return res.status(400).json({ error: 'Missing token' })
+            }
+            if (!password || typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+                return res.status(400).json({
+                    error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+                })
+            }
+
+            const tokenHash = hashToken(token)
+            const hashedPassword = phpPassword.hash(password)
+            const user = await authRepository.consumePasswordResetToken(tokenHash, hashedPassword)
+            if (!user) {
+                return res.status(400).json({ error: 'Invalid or expired token' })
+            }
+
+            // Sign the user in straight away — same convention as register.
+            const tokens = jwt.generateTokens(user)
+            jwt.setTokenCookies(res, tokens)
+
+            res.json({ success: true })
+        } catch (error) {
+            console.error('Reset-password error:', error)
+            res.status(500).json({ error: 'Reset failed' })
         }
     })
 

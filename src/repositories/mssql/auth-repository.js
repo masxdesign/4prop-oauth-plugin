@@ -340,21 +340,29 @@ export default class MSSQLAuthRepository {
         return result.recordset[0] || null
     }
 
+    // ── Auth-flow email rate-limiting ──────────────────────────────────────
+
     /**
-     * Resend rate-limit lookup. Returns the most recent attempt timestamp and
-     * count of attempts in the last 24h for this email. The caller decides
-     * whether the 60s cooldown / 5-per-24h cap is exceeded.
+     * Rate-limit lookup for any auth-flow email send (verification or reset).
+     * Returns the most recent attempt timestamp and count of attempts in the
+     * last 24h for this email + type. The caller decides whether the 60s
+     * cooldown / 5-per-24h cap is exceeded.
+     *
+     * @param {string} email
+     * @param {'verify'|'reset'} type
      */
-    async getEmailVerifyResendStats(email) {
+    async getAuthEmailResendStats(email, type = 'verify') {
         const pool = await getPool()
         const result = await pool.request()
             .input('email', sql.VarChar(75), email)
+            .input('type', sql.VarChar(20), type)
             .query(`
                 SELECT
                     MAX([sent_at]) AS lastSentAt,
                     COUNT(*)       AS last24hCount
                 FROM a_rcEmailVerifyAttempts
                 WHERE [email] = @email
+                  AND [type]  = @type
                   AND [sent_at] > DATEADD(HOUR, -24, SYSUTCDATETIME())
             `)
 
@@ -366,16 +374,85 @@ export default class MSSQLAuthRepository {
     }
 
     /**
-     * Record a verification-email send. Append-only; older rows can be pruned
-     * by a separate maintenance job (not in this code path).
+     * Record an auth-flow email send. Append-only; older rows can be pruned
+     * by a separate maintenance job.
+     *
+     * @param {string} email
+     * @param {'verify'|'reset'} type
      */
-    async recordEmailVerifyAttempt(email) {
+    async recordAuthEmailAttempt(email, type = 'verify') {
         const pool = await getPool()
         await pool.request()
             .input('email', sql.VarChar(75), email)
+            .input('type', sql.VarChar(20), type)
             .query(`
-                INSERT INTO a_rcEmailVerifyAttempts ([email], [sent_at])
-                VALUES (@email, SYSUTCDATETIME())
+                INSERT INTO a_rcEmailVerifyAttempts ([email], [type], [sent_at])
+                VALUES (@email, @type, SYSUTCDATETIME())
             `)
+    }
+
+    // Back-compat: existing oauth router code calls these by their old names.
+    // Forward to the type-aware methods so behaviour is unchanged for the
+    // verify flow while password-reset uses the new names.
+    async getEmailVerifyResendStats(email) {
+        return this.getAuthEmailResendStats(email, 'verify')
+    }
+    async recordEmailVerifyAttempt(email) {
+        return this.recordAuthEmailAttempt(email, 'verify')
+    }
+
+    // ── Password reset ─────────────────────────────────────────────────────
+
+    /**
+     * Write a password-reset token (hash + expiry) onto the user row. Plain
+     * token is never stored; caller emails it. Overwrites any outstanding
+     * reset token — re-requesting invalidates the previous link.
+     */
+    async setPasswordResetToken(userId, tokenHash, expiresAt) {
+        const pool = await getPool()
+        await pool.request()
+            .input('userId', userId)
+            .input('tokenHash', sql.VarChar(64), tokenHash)
+            .input('expiresAt', sql.DateTime, expiresAt)
+            .query(`
+                UPDATE a_rcUsers
+                SET [password_reset_token_hash] = @tokenHash,
+                    [password_reset_token_expires_at] = @expiresAt
+                WHERE [id] = @userId
+            `)
+    }
+
+    /**
+     * Consume a password-reset token: find by hash, check unexpired, set the
+     * new password hash, mark email verified (proof of inbox ownership),
+     * clear the reset token columns — all in a single atomic UPDATE.
+     *
+     * Returns { id, email, firstname, surname, role } on success, or null
+     * if the hash is unknown or expired. Caller hashes the password before
+     * calling (this method does NOT hash — it just stores what's given).
+     */
+    async consumePasswordResetToken(tokenHash, hashedPassword) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('tokenHash', sql.VarChar(64), tokenHash)
+            .input('password', sql.Text, hashedPassword)
+            .query(`
+                UPDATE a_rcUsers
+                SET [password] = @password,
+                    [password_reset_token_hash] = NULL,
+                    [password_reset_token_expires_at] = NULL,
+                    [email_verified_at] = COALESCE([email_verified_at], SYSUTCDATETIME())
+                OUTPUT
+                    INSERTED.id,
+                    INSERTED.email,
+                    INSERTED.first AS firstname,
+                    INSERTED.last  AS surname,
+                    INSERTED.role
+                WHERE [password_reset_token_hash] = @tokenHash
+                  AND [password_reset_token_expires_at] IS NOT NULL
+                  AND [password_reset_token_expires_at] > SYSUTCDATETIME()
+            `)
+
+        return result.recordset[0] || null
     }
 }

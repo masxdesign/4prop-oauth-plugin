@@ -9,7 +9,8 @@
     "./middleware": "./src/middleware/authenticate.js",
     "./jwt": "./src/services/jwt.js",
     "./mssql": "./src/repositories/mssql/auth-repository.js",
-    "./email-verify-token": "./src/utils/emailVerifyToken.js"
+    "./email-verify-token": "./src/utils/emailVerifyToken.js",
+    "./single-use-token": "./src/utils/singleUseToken.js"
   },
   "peerDependencies": {
     "express": "^4.18.0",
