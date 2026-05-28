@@ -199,15 +199,17 @@ export default class MSSQLAuthRepository {
                     COALESCE(u.[email], n.[email]) [email],
                     u.[oauth_provider],
                     u.[oauth_id],
-                    COALESCE(u.[avatar], n.[picture]) [avatar],
+                    COALESCE(u.[avatar], n.[Picture]) [avatar],
                     u.[last_login],
                     u.[neg_id],
                     u.[role],
                     u.[email_verified_at],
                     n.[phone],
+                    n.[DID] AS [did],
                     COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
-                LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
+                LEFT JOIN a_rpNegotiator n
+                    ON LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32))))
                 LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
                 WHERE u.[id] = @userId
             `)
@@ -218,7 +220,7 @@ export default class MSSQLAuthRepository {
     async getUserByNegId(negId) {
         const pool = await getPool()
         const result = await pool.request()
-            .input('negId', sql.VarChar(20), negId)
+            .input('negId', sql.VarChar(32), String(negId).trim())
             .query(`
                 SELECT
                     u.[id],
@@ -227,20 +229,68 @@ export default class MSSQLAuthRepository {
                     COALESCE(u.[email], n.[email]) [email],
                     u.[oauth_provider],
                     u.[oauth_id],
-                    COALESCE(u.[avatar], n.[picture]) [avatar],
+                    COALESCE(u.[avatar], n.[Picture]) [avatar],
                     u.[last_login],
                     u.[neg_id],
                     u.[role],
                     u.[email_verified_at],
                     n.[phone],
+                    n.[DID] AS [did],
                     COALESCE(c.[name], u.[company]) [company]
                 FROM a_rcUsers u
-                LEFT JOIN a_rpNegotiator n ON n.[NID] = u.[neg_id]
+                LEFT JOIN a_rpNegotiator n
+                    ON LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32))))
                 LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
-                WHERE u.[neg_id] = @negId
+                WHERE LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32)))) = @negId
             `)
 
         return result.recordset[0] || null
+    }
+
+    /**
+     * Negotiators in the same department (DID) as the caller, excluding self.
+     * DID/NID are compared as varchar — some values exceed 32-bit int (e.g. 220410155504).
+     * @param {string|number} negId
+     * @returns {Promise<Array<{ nid: string, firstname: string, surname: string, email: string, picture: string, company: string }>>}
+     */
+    async getDepartmentColleagues(negId) {
+        const excludeNegId = String(negId).trim()
+        if (!excludeNegId) return []
+
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('negId', sql.VarChar(32), excludeNegId)
+            .query(`
+                ;WITH caller AS (
+                    SELECT LTRIM(RTRIM(CAST(n.[DID] AS VARCHAR(32)))) AS did
+                    FROM a_rpNegotiator n
+                    WHERE LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = @negId
+                )
+                SELECT
+                    n.[NID] AS nid,
+                    n.[firstname],
+                    n.[surname],
+                    n.[email],
+                    n.[Picture] AS picture,
+                    co.[name] AS company,
+                    -- Admin status lives on the linked a_rcUsers row (bit 8).
+                    -- Surfaced so the picker can block switching to admins.
+                    (
+                        SELECT MAX(au.[role])
+                        FROM a_rcUsers au
+                        WHERE LTRIM(RTRIM(CAST(au.[neg_id] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32))))
+                    ) AS userRole
+                FROM a_rpNegotiator n
+                INNER JOIN caller callerDept
+                    ON LTRIM(RTRIM(CAST(n.[DID] AS VARCHAR(32)))) = callerDept.did
+                LEFT JOIN a_rcCompany co ON co.[cid] = n.[cid]
+                WHERE callerDept.did IS NOT NULL
+                  AND callerDept.did <> ''
+                  AND LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) <> @negId
+                ORDER BY n.[surname], n.[firstname]
+            `)
+
+        return result.recordset || []
     }
 
     /**
@@ -248,17 +298,18 @@ export default class MSSQLAuthRepository {
      * Mirrors the bizchat enquiry provisioning pattern (see resolveAgentUserIds.js)
      * and the PHP getUserInsertEACHAgent equivalent.
      */
+
     async getOrCreateUserByNegId(negId) {
         const existing = await this.getUserByNegId(negId)
         if (existing) return existing
 
         const pool = await getPool()
         const insertResult = await pool.request()
-            .input('negId', sql.VarChar(20), negId)
+            .input('negId', sql.VarChar(32), String(negId).trim())
             .query(`
-                INSERT INTO a_rcUsers (neg_id, role)
+                INSERT INTO a_rcUsers (neg_id, role, email_verified_at)
                 OUTPUT CAST(INSERTED.id AS BIGINT) AS id
-                VALUES (@negId, 32)
+                VALUES (@negId, 32, SYSUTCDATETIME())
             `)
 
         const newId = insertResult.recordset[0]?.id

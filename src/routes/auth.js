@@ -7,6 +7,7 @@ import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2'
 import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
 import { generateToken, hashToken } from '../utils/singleUseToken.js'
+import { isAgentAccount, isEmailVerifiedForPolicy } from '../lib/emailVerification.js'
 
 // Resend rate-limit knobs — same for both verify and reset flows.
 const RESEND_COOLDOWN_MS = 60 * 1000
@@ -96,6 +97,9 @@ export default function createAuthRouter(authRepository, config = {}) {
      * isn't blocked on SES; failures are logged.
      */
     async function issueAndSendVerifyEmail(user, advertiserId) {
+        if (isAgentAccount(user)) {
+            return null
+        }
         const { plain, hash, expiresAt } = generateToken()
         await authRepository.setEmailVerifyToken(user.id, hash, expiresAt)
         await authRepository.recordAuthEmailAttempt(user.email, 'verify')
@@ -368,9 +372,8 @@ export default function createAuthRouter(authRepository, config = {}) {
             if (!user) {
                 return res.status(404).json({ error: 'User not found' })
             }
-            if (user.email_verified_at) {
-                // Already verified — surface plainly so the frontend can suppress
-                // the banner instead of looping on resend.
+            if (isEmailVerifiedForPolicy(user)) {
+                // Already verified (or agent — verification not required).
                 return res.status(409).json({ error: 'Email already verified' })
             }
 
@@ -520,11 +523,20 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(401).json({ error: 'User not found' })
             }
 
+            const impersonationOptions = decoded.impersonating
+                ? {
+                    impersonationAllowedMutations: Array.isArray(decoded.impersonationAllowedMutations)
+                        ? decoded.impersonationAllowedMutations
+                        : undefined,
+                }
+                : {}
+
             const accessToken = decoded.impersonating
-                ? jwt.generateImpersonationAccessToken(targetUser, {
-                    id: decoded.adminUserId,
-                    email: decoded.adminEmail
-                })
+                ? jwt.generateImpersonationAccessToken(
+                    targetUser,
+                    { id: decoded.adminUserId, email: decoded.adminEmail },
+                    impersonationOptions,
+                )
                 : jwt.generateAccessToken(targetUser)
 
             jwt.setAccessTokenCookie(res, accessToken)
@@ -556,9 +568,17 @@ export default function createAuthRouter(authRepository, config = {}) {
                         email: adminUser.email,
                         firstname: adminUser.firstname,
                         surname: adminUser.surname,
-                        neg_id: adminUser.neg_id ?? null
+                        neg_id: adminUser.neg_id ?? null,
+                        avatar: adminUser.avatar ?? null,
+                        // Role lets the frontend palette reflect the admin's own
+                        // capabilities (not the impersonated user's) while impersonating.
+                        role: adminUser.role ?? null
                     }
                 }
+            }
+
+            if (req.user.impersonating && Array.isArray(req.user.impersonationAllowedMutations)) {
+                payload.impersonationAllowedMutations = req.user.impersonationAllowedMutations
             }
 
             res.json({ user: payload })
@@ -594,30 +614,62 @@ export default function createAuthRouter(authRepository, config = {}) {
         }
     })
 
-    // Start impersonating a target user. Requires the caller to hold ROLE_EACH on
-    // their *original* admin account (the adminUserId claim if already impersonating,
-    // otherwise userId). targetNegId provisions a_rcUsers row if missing.
+    // Start impersonating a target user.
+    // Admin: full impersonation (omit allowedMutations) or read-only (allowedMutations: []).
+    // Agent (EACH + neg_id): same-DID colleague only with allowedMutations: [].
     router.post('/impersonate', authenticate, async (req, res) => {
         try {
-            const isCurrentlyImpersonating = !!req.user.impersonating
-            const adminUserId = isCurrentlyImpersonating
+            // Allow switching targets without exiting first: when already
+            // impersonating, the real operator is the original admin/agent
+            // (adminUserId claim), not the impersonated user. Re-authorize
+            // against that operator and issue a fresh token.
+            const callerId = req.user.impersonating
                 ? req.user.adminUserId
                 : req.user.userId
 
-            if (!adminUserId) {
-                return res.status(401).json({ error: 'Admin user not identified in token' })
+            if (!callerId) {
+                return res.status(401).json({ error: 'Caller not identified in token' })
             }
 
-            const adminUser = await authRepository.getUserById(adminUserId)
-            if (!adminUser) {
-                return res.status(401).json({ error: 'Admin user not found' })
+            const caller = await authRepository.getUserById(callerId)
+            if (!caller) {
+                return res.status(401).json({ error: 'Caller not found' })
             }
 
-            if (!hasRole(adminUser.role, ROLES.ADMIN)) {
-                return res.status(403).json({ error: 'Admin role required' })
+            const body = req.body || {}
+            const { targetUserId, targetNegId, allowedMutations } = body
+
+            let restrictions = null
+            if (allowedMutations !== undefined && allowedMutations !== null) {
+                if (!Array.isArray(allowedMutations)) {
+                    return res.status(400).json({ error: 'allowedMutations must be an array' })
+                }
+                restrictions = allowedMutations
             }
 
-            const { targetUserId, targetNegId } = req.body || {}
+            const isAdmin = hasRole(caller.role, ROLES.ADMIN)
+            const isAgent = caller.neg_id != null
+                && caller.neg_id !== ''
+                && hasRole(caller.role, ROLES.EACH)
+
+            if (!isAdmin && !isAgent) {
+                return res.status(403).json({ error: 'Not authorized to impersonate' })
+            }
+
+            if (isAgent && !isAdmin) {
+                if (targetUserId) {
+                    return res.status(403).json({ error: 'Agents must impersonate colleagues via targetNegId' })
+                }
+                if (!targetNegId) {
+                    return res.status(400).json({ error: 'targetNegId is required' })
+                }
+                if (!Array.isArray(restrictions) || restrictions.length !== 0) {
+                    return res.status(403).json({
+                        error: 'Colleague impersonation requires allowedMutations: []',
+                    })
+                }
+            }
+
             if (!targetUserId && !targetNegId) {
                 return res.status(400).json({ error: 'targetUserId or targetNegId is required' })
             }
@@ -634,21 +686,49 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(403).json({ error: 'Cannot impersonate admin users' })
             }
 
-            const tokens = jwt.generateImpersonationTokens(targetUser, adminUser)
+            if (isAgent && !isAdmin) {
+                if (!targetUser.neg_id) {
+                    return res.status(403).json({ error: 'Target is not an agent account' })
+                }
+                if (
+                    caller.did == null
+                    || targetUser.did == null
+                    || String(caller.did) !== String(targetUser.did)
+                ) {
+                    return res.status(403).json({ error: 'Target must be in your department' })
+                }
+                if (String(caller.neg_id) === String(targetUser.neg_id)) {
+                    return res.status(403).json({ error: 'Cannot impersonate yourself' })
+                }
+            }
+
+            const impersonationOptions = Array.isArray(restrictions)
+                ? { impersonationAllowedMutations: restrictions }
+                : {}
+
+            const tokens = jwt.generateImpersonationTokens(targetUser, caller, impersonationOptions)
             jwt.setTokenCookies(res, tokens)
 
-            res.json({
+            const responsePayload = {
                 token: tokens.accessToken,
                 impersonating: true,
                 targetUser: sanitizeUser(targetUser),
                 originalUser: {
-                    id: adminUser.id,
-                    email: adminUser.email,
-                    firstname: adminUser.firstname,
-                    surname: adminUser.surname,
-                    neg_id: adminUser.neg_id ?? null
-                }
-            })
+                    id: caller.id,
+                    email: caller.email,
+                    firstname: caller.firstname,
+                    surname: caller.surname,
+                    neg_id: caller.neg_id ?? null,
+                    avatar: caller.avatar ?? null,
+                    role: caller.role ?? null,
+                },
+            }
+
+            if (Array.isArray(restrictions)) {
+                responsePayload.impersonationAllowedMutations = restrictions
+            }
+
+            res.json(responsePayload)
         } catch (error) {
             res.status(500).json({ error: error.message || 'Failed to impersonate' })
         }
@@ -684,6 +764,62 @@ export default function createAuthRouter(authRepository, config = {}) {
         }
     })
 
+    // Admin-only "full login as": mint the target's NORMAL session (no
+    // impersonation wrapper, no adminUserId, no return-to-admin). The caller
+    // becomes the target exactly as if they had logged in with the target's
+    // password — so the target's own features (e.g. an agent's colleague
+    // switch) work, since there is no impersonation layer to block them.
+    //
+    // This is NOT a password bypass: the caller is already authenticated and
+    // must be an admin. /login and verifyPassword are untouched.
+    router.post('/login-as', authenticate, async (req, res) => {
+        try {
+            const caller = await authRepository.getUserById(req.user.userId)
+            if (!caller) {
+                return res.status(401).json({ error: 'Caller not found' })
+            }
+
+            // Admin only — this is the privileged "real login" door. No agent
+            // path: agents use /impersonate for read-only colleague access.
+            if (!hasRole(caller.role, ROLES.ADMIN)) {
+                return res.status(403).json({ error: 'Not authorized' })
+            }
+
+            const { targetUserId, targetNegId } = req.body || {}
+
+            if (!targetUserId && !targetNegId) {
+                return res.status(400).json({ error: 'targetUserId or targetNegId is required' })
+            }
+
+            const targetUser = targetNegId
+                ? await authRepository.getOrCreateUserByNegId(targetNegId)
+                : await authRepository.getUserById(targetUserId)
+
+            if (!targetUser) {
+                return res.status(404).json({ error: 'Target user not found' })
+            }
+
+            // An admin must not be able to mint another admin's real session.
+            if (hasRole(targetUser.role, ROLES.ADMIN)) {
+                return res.status(403).json({ error: 'Cannot log in as admin users' })
+            }
+
+            // Audit: the issued session is no longer self-attributing, so log
+            // who minted it.
+            console.warn(
+                `[login-as] admin ${caller.id} <${caller.email}> minted full session for target ${targetUser.id} <${targetUser.email}>`
+            )
+
+            // Normal (non-impersonation) tokens — same as /login.
+            const tokens = jwt.generateTokens(targetUser)
+            jwt.setTokenCookies(res, tokens)
+
+            res.json({ success: true, user: sanitizeUser(targetUser) })
+        } catch (error) {
+            res.status(500).json({ error: error.message || 'Failed to log in as target' })
+        }
+    })
+
     return router
 }
 
@@ -697,8 +833,8 @@ function sanitizeUser(user) {
     } = user
     return {
         ...sanitized,
-        // Derived boolean — the raw DATETIME never leaves the server.
-        emailVerified: !!email_verified_at,
+        // Agents (neg_id) are exempt from the seeker verification flow.
+        emailVerified: isEmailVerifiedForPolicy(user),
     }
 }
 

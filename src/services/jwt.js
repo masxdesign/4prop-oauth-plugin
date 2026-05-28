@@ -161,36 +161,48 @@ export function generateTokens(user) {
     }
 }
 
-export function generateImpersonationAccessToken(targetUser, adminUser) {
+function buildImpersonationClaims(targetUser, originalUser, options = {}) {
+    const claims = {
+        ...buildUserClaims(targetUser),
+        impersonating: true,
+        adminUserId: originalUser.id,
+        adminEmail: originalUser.email,
+    }
+    if (Array.isArray(options.impersonationAllowedMutations)) {
+        claims.impersonationAllowedMutations = options.impersonationAllowedMutations
+    }
+    return claims
+}
+
+export function generateImpersonationAccessToken(targetUser, originalUser, options = {}) {
     return jwtLib.sign(
-        {
-            ...buildUserClaims(targetUser),
-            impersonating: true,
-            adminUserId: adminUser.id,
-            adminEmail: adminUser.email
-        },
+        buildImpersonationClaims(targetUser, originalUser, options),
         getAccessSecret(),
         { expiresIn: getAccessExpiry() }
     )
 }
 
-export function generateImpersonationRefreshToken(targetUser, adminUser) {
+export function generateImpersonationRefreshToken(targetUser, originalUser, options = {}) {
+    const payload = {
+        userId: targetUser.id,
+        impersonating: true,
+        adminUserId: originalUser.id,
+        adminEmail: originalUser.email,
+    }
+    if (Array.isArray(options.impersonationAllowedMutations)) {
+        payload.impersonationAllowedMutations = options.impersonationAllowedMutations
+    }
     return jwtLib.sign(
-        {
-            userId: targetUser.id,
-            impersonating: true,
-            adminUserId: adminUser.id,
-            adminEmail: adminUser.email
-        },
+        payload,
         getRefreshSecret(),
         { expiresIn: getRefreshExpiry() }
     )
 }
 
-export function generateImpersonationTokens(targetUser, adminUser) {
+export function generateImpersonationTokens(targetUser, originalUser, options = {}) {
     return {
-        accessToken: generateImpersonationAccessToken(targetUser, adminUser),
-        refreshToken: generateImpersonationRefreshToken(targetUser, adminUser)
+        accessToken: generateImpersonationAccessToken(targetUser, originalUser, options),
+        refreshToken: generateImpersonationRefreshToken(targetUser, originalUser, options),
     }
 }
 
