@@ -774,7 +774,17 @@ export default function createAuthRouter(authRepository, config = {}) {
     // must be an admin. /login and verifyPassword are untouched.
     router.post('/login-as', authenticate, async (req, res) => {
         try {
-            const caller = await authRepository.getUserById(req.user.userId)
+            // When already impersonating, authorize against the real admin
+            // (adminUserId), not the impersonated account — same as /impersonate.
+            const callerId = req.user.impersonating
+                ? req.user.adminUserId
+                : req.user.userId
+
+            if (!callerId) {
+                return res.status(401).json({ error: 'Caller not identified in token' })
+            }
+
+            const caller = await authRepository.getUserById(callerId)
             if (!caller) {
                 return res.status(401).json({ error: 'Caller not found' })
             }
