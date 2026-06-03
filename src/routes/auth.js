@@ -8,6 +8,8 @@ import jwt from '../services/jwt.js'
 import { authenticate } from '../middleware/authenticate.js'
 import { generateToken, hashToken } from '../utils/singleUseToken.js'
 import { isAgentAccount, isEmailVerifiedForPolicy } from '../lib/emailVerification.js'
+import { assertRateLimit, getClientIp, RateLimitError } from '../lib/rateLimit.js'
+import { validateSignupInput, SignupValidationError } from '../lib/signupValidation.js'
 
 // Resend rate-limit knobs — same for both verify and reset flows.
 const RESEND_COOLDOWN_MS = 60 * 1000
@@ -21,6 +23,11 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 // rule. Tightening later would need a one-time forced reset for users below
 // the new floor.
 const MIN_PASSWORD_LENGTH = 6
+
+const REGISTER_IP_LIMIT = 5
+const REGISTER_IP_WINDOW_MS = 60 * 60 * 1000
+const REGISTER_EMAIL_LIMIT = 3
+const REGISTER_EMAIL_WINDOW_MS = 60 * 60 * 1000
 
 // Role bitmask constants - aligned with PHP/4prop and bizchat dual-auth
 export const ROLES = {
@@ -252,11 +259,32 @@ export default function createAuthRouter(authRepository, config = {}) {
     // Register
     router.post('/register', async (req, res) => {
         try {
-            const { email, password, name, first, last, company, advertiserId } = req.body
+            const { advertiserId } = req.body
 
-            if (!email || !password) {
-                return res.status(400).json({ error: 'Email and password are required' })
+            assertRateLimit(
+                `register:ip:${getClientIp(req)}`,
+                REGISTER_IP_LIMIT,
+                REGISTER_IP_WINDOW_MS,
+            )
+
+            let signup
+            try {
+                signup = validateSignupInput(req.body, {
+                    minPasswordLength: MIN_PASSWORD_LENGTH,
+                })
+            } catch (error) {
+                if (error instanceof SignupValidationError) {
+                    return res.status(400).json({ error: error.message })
+                }
+                throw error
             }
+
+            assertRateLimit(
+                `register:email:${signup.email}`,
+                REGISTER_EMAIL_LIMIT,
+                REGISTER_EMAIL_WINDOW_MS,
+            )
+
             // advertiserId is required only when verification email sending is
             // wired — the mailer needs it to build the correct verify URL host.
             // Without verification wired we don't care, so registrations still
@@ -270,34 +298,29 @@ export default function createAuthRouter(authRepository, config = {}) {
             // creating a duplicate non-agent record for someone who already
             // has agent credentials.
             if (typeof authRepository.findNegotiatorByEmail === 'function') {
-                const negotiator = await authRepository.findNegotiatorByEmail(email)
+                const negotiator = await authRepository.findNegotiatorByEmail(signup.email)
                 if (negotiator) {
                     return res.status(409).json({
                         error: 'This email is registered as an EACH agent. Sign in with your EACH credentials instead.',
                         code: 'AGENT_EMAIL_EXISTS',
-                        email
+                        email: signup.email,
                     })
                 }
             }
 
-            // Accept either explicit { first, last } or a single { name } that we split
-            let firstName = first
-            let lastName = last
-            if (!firstName && !lastName && typeof name === 'string') {
-                const trimmed = name.trim()
-                if (trimmed) {
-                    const parts = trimmed.split(/\s+/)
-                    firstName = parts.shift()
-                    lastName = parts.length ? parts.join(' ') : null
+            if (typeof authRepository.findUserByEmail === 'function') {
+                const existingUser = await authRepository.findUserByEmail(signup.email)
+                if (existingUser) {
+                    return res.status(409).json({ error: 'Email already registered' })
                 }
             }
 
             const user = await authRepository.createUser({
-                email,
-                password,
-                first: firstName,
-                last: lastName,
-                company: company || null
+                email: signup.email,
+                password: signup.password,
+                first: signup.first,
+                last: signup.last,
+                company: signup.company,
             })
             const tokens = jwt.generateTokens(user)
             jwt.setTokenCookies(res, tokens)
@@ -317,6 +340,13 @@ export default function createAuthRouter(authRepository, config = {}) {
 
             res.json({ success: true, user: sanitizeUser(user) })
         } catch (error) {
+            if (error instanceof RateLimitError) {
+                res.setHeader('Retry-After', String(error.retryAfter))
+                return res.status(429).json({
+                    error: error.message,
+                    retryAfter: error.retryAfter,
+                })
+            }
             res.status(400).json({ error: error.message })
         }
     })
@@ -569,6 +599,10 @@ export default function createAuthRouter(authRepository, config = {}) {
                         firstname: adminUser.firstname,
                         surname: adminUser.surname,
                         neg_id: adminUser.neg_id ?? null,
+                        // Department of the real operator — lets the frontend run
+                        // same-department colleague checks against the operator
+                        // (not the impersonated user) when offering a nested switch.
+                        did: adminUser.did ?? null,
                         avatar: adminUser.avatar ?? null,
                         // Role lets the frontend palette reflect the admin's own
                         // capabilities (not the impersonated user's) while impersonating.
