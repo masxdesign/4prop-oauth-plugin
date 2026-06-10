@@ -12,8 +12,15 @@ import { assertRateLimit, getClientIp, RateLimitError } from '../lib/rateLimit.j
 import { validateSignupInput, SignupValidationError } from '../lib/signupValidation.js'
 
 // Resend rate-limit knobs — same for both verify and reset flows.
+//
+// The 60s COOLDOWN is the primary guard: it defeats rapid-fire bursts (the
+// real mail-bombing vector) while staying invisible to a normal user. The
+// 24h CAP is only a backstop, set generously (10) so a legitimate user who
+// didn't get the first email — spam folder, typo, slow delivery — can retry
+// across the day without being locked out. (A tight cap of 5 previously locked
+// real users out after a handful of attempts.)
 const RESEND_COOLDOWN_MS = 60 * 1000
-const RESEND_MAX_PER_24H = 5
+const RESEND_MAX_PER_24H = 10
 
 // Password-reset tokens are more sensitive than verify tokens, so they live
 // for less time (1h vs 24h).
@@ -124,14 +131,14 @@ export default function createAuthRouter(authRepository, config = {}) {
      * (failures logged). The token TTL is 1h — shorter than verification
      * because the reset link grants control of the password.
      */
-    async function issueAndSendResetEmail(user, advertiserId) {
+    async function issueAndSendResetEmail(user, advertiserId, returnTo = null) {
         const { plain, hash, expiresAt } = generateToken({ ttlMs: PASSWORD_RESET_TTL_MS })
         await authRepository.setPasswordResetToken(user.id, hash, expiresAt)
         await authRepository.recordAuthEmailAttempt(user.email, 'reset')
         if (sendPasswordResetEmail) {
             const delivery = resolveDelivery('reset', user, advertiserId)
             Promise.resolve()
-                .then(() => sendPasswordResetEmail(user, plain, advertiserId, delivery))
+                .then(() => sendPasswordResetEmail(user, plain, advertiserId, delivery, returnTo))
                 .catch((err) => console.error('[resetPassword] send failed for', user.email, err))
         }
         return plain
@@ -252,6 +259,54 @@ export default function createAuthRouter(authRepository, config = {}) {
             const negotiator = await authRepository.findNegotiatorByEmail(email)
             res.json({ isAgent: !!negotiator })
         } catch (error) {
+            res.status(500).json({ error: error.message })
+        }
+    })
+
+    // Email availability — lets the register form fail fast on blur instead of
+    // letting the user fill the whole form only to be rejected on submit.
+    // Returns { available } where available = no regular account AND no agent
+    // record uses this email. Mirrors the duplicate checks inside /register
+    // (findUserByEmail + findNegotiatorByEmail) so the two never disagree.
+    //
+    // Enumeration note: this discloses whether an email has an account — the
+    // same trade-off already accepted by /check-agent-email. A light per-IP
+    // rate limit blunts bulk probing. Fails OPEN (available: true) on missing
+    // repo support or errors so registration is never blocked by this check.
+    router.get('/check-email', async (req, res) => {
+        try {
+            const email = typeof req.query.email === 'string' ? req.query.email.trim() : ''
+
+            if (!email) {
+                return res.status(400).json({ error: 'email query parameter is required' })
+            }
+
+            assertRateLimit(
+                `check-email:ip:${getClientIp(req)}`,
+                30,
+                60 * 1000,
+            )
+
+            const [existingUser, negotiator] = await Promise.all([
+                typeof authRepository.findUserByEmail === 'function'
+                    ? authRepository.findUserByEmail(email)
+                    : null,
+                typeof authRepository.findNegotiatorByEmail === 'function'
+                    ? authRepository.findNegotiatorByEmail(email)
+                    : null,
+            ])
+
+            res.json({
+                available: !existingUser && !negotiator,
+                // Surface the agent case so the form can route to the EACH
+                // login flow rather than a generic "already registered".
+                isAgent: !!negotiator,
+            })
+        } catch (error) {
+            if (error instanceof RateLimitError) {
+                res.setHeader('Retry-After', String(error.retryAfter))
+                return res.status(429).json({ error: error.message, retryAfter: error.retryAfter })
+            }
             res.status(500).json({ error: error.message })
         }
     })
@@ -462,6 +517,12 @@ export default function createAuthRouter(authRepository, config = {}) {
                 return res.status(400).json({ error: 'advertiserId is required' })
             }
 
+            // Where to send the user back after they save the new password — the
+            // page (incl. filters) they were on when they hit "forgot password".
+            // Open-redirect guard: accept ONLY a relative same-origin path
+            // ("/...", not "//host" or "https://..."). Anything else is dropped.
+            const returnTo = sanitizeRelativePath(req.body?.returnTo)
+
             // Rate-limit BEFORE the user lookup so we don't leak existence via
             // timing differences. Cooldown / cap apply to the supplied email
             // regardless of whether it matches a user.
@@ -486,7 +547,7 @@ export default function createAuthRouter(authRepository, config = {}) {
                 // Only password-bearing accounts can be reset. OAuth-only
                 // users (no password column) can't recover via this flow —
                 // they sign in through their provider.
-                await issueAndSendResetEmail(user, advertiserId)
+                await issueAndSendResetEmail(user, advertiserId, returnTo)
             }
             // Always 200, whether we sent or not.
             res.json({ success: true })
@@ -880,6 +941,31 @@ function sanitizeUser(user) {
         // Agents (neg_id) are exempt from the seeker verification flow.
         emailVerified: isEmailVerifiedForPolicy(user),
     }
+}
+
+/**
+ * Accept ONLY a safe relative router path for redirect-after-action use
+ * (e.g. the password-reset returnTo). Returns the cleaned path or null.
+ *
+ * Rejects anything that could redirect off-site:
+ *   - non-strings / empty
+ *   - absolute URLs ("https://evil.com", "javascript:…")
+ *   - protocol-relative ("//evil.com")
+ *   - paths not starting with a single "/"
+ * Caps length to keep the reset-email URL sane.
+ */
+function sanitizeRelativePath(value) {
+    if (typeof value !== 'string') return null
+    const v = value.trim()
+    if (!v) return null
+    if (v.length > 2048) return null
+    // Must be a single-slash-rooted path. "//x" (protocol-relative) and any
+    // "scheme:" prefix are rejected.
+    if (!v.startsWith('/') || v.startsWith('//')) return null
+    if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return null
+    // Backslashes are normalised to "/" by some browsers → treat as off-site.
+    if (v.includes('\\')) return null
+    return v
 }
 
 /** Configure passport strategies - call once during app initialization */
