@@ -65,6 +65,17 @@ function normalizeCookieOverrides(cookies) {
 function buildPresetBase(cookieMode) {
     const isProd = isProduction()
     if (cookieMode === 'cross-origin-spa') {
+        // NOTE: `SameSite=None` from a different registrable domain is a THIRD-PARTY
+        // cookie, which WebKit (Safari, and every iOS browser) blocks by default via ITP.
+        // Chrome still allows it. So this mode only ever works in Chromium browsers.
+        //
+        // CHIPS (`Partitioned`) does NOT rescue it: the cookie is set while the browser is
+        // on the OAuth callback URL (the auth host's own top-level site), so it lands in
+        // THAT partition — not the SPA's — and the SPA can never read it.
+        //
+        // The real fix is to stop being third-party: proxy `/api/auth/*` through the SPA's
+        // own hostname so the cookies are first-party (see the nginx rule in 4prop-container
+        // for www.4prop.com). Domains that do that don't need this mode at all.
         return {
             httpOnly: true,
             secure: true,
@@ -98,10 +109,11 @@ function getResolvedCookieOptions() {
 
 /**
  * Express middleware: resolves per-request cookie flags via resolveCookieMode(req)
- * and stores them in AsyncLocalStorage for jwt cookie helpers.
+ * and optional resolveCookieOverrides(req), stored in AsyncLocalStorage for helpers.
  * @param {(req: import('express').Request) => ('same-site'|'cross-origin-spa'|undefined)} resolveCookieMode
+ * @param {(req: import('express').Request) => Record<string, unknown>|undefined} [resolveCookieOverrides]
  */
-export function createCookieModeMiddleware(resolveCookieMode) {
+export function createCookieModeMiddleware(resolveCookieMode, resolveCookieOverrides) {
     if (typeof resolveCookieMode !== 'function') {
         throw new Error('createCookieModeMiddleware: resolveCookieMode must be a function')
     }
@@ -110,7 +122,12 @@ export function createCookieModeMiddleware(resolveCookieMode) {
         if (mode !== 'same-site' && mode !== 'cross-origin-spa') {
             mode = authCookieDefaults.cookieMode
         }
-        const opts = mergeCookieOptions(mode, authCookieDefaults.cookies)
+        const perRequestOverrides =
+            typeof resolveCookieOverrides === 'function' ? resolveCookieOverrides(req) : {}
+        const opts = mergeCookieOptions(mode, {
+            ...authCookieDefaults.cookies,
+            ...normalizeCookieOverrides(perRequestOverrides),
+        })
         return authCookieAsyncLocalStorage.run(opts, () => next())
     }
 }
@@ -269,6 +286,39 @@ export function clearTokenCookies(res) {
     res.clearCookie('refresh_token', refreshClear)
 }
 
+const AUTH_COOKIE_NAMES = ['access_token', 'refresh_token']
+const AUTH_COOKIE_SAMESITE_VARIANTS = ['strict', 'lax', 'none']
+
+/**
+ * Clear auth cookies across domain / SameSite combinations. Used on logout to
+ * remove legacy PHP cookies (e.g. Domain=.4prop.com, SameSite=None) that the
+ * default clearTokenCookies() miss when the current preset is host-only Strict.
+ */
+export function clearTokenCookieVariants(res, { domain, secure = true } = {}) {
+    for (const name of AUTH_COOKIE_NAMES) {
+        for (const sameSite of AUTH_COOKIE_SAMESITE_VARIANTS) {
+            const opts = {
+                httpOnly: true,
+                secure: sameSite === 'none' ? true : secure,
+                sameSite,
+                path: '/',
+            }
+            if (domain) opts.domain = domain
+            res.clearCookie(name, opts)
+        }
+        if (domain) {
+            for (const sameSite of AUTH_COOKIE_SAMESITE_VARIANTS) {
+                res.clearCookie(name, {
+                    httpOnly: true,
+                    secure: sameSite === 'none' ? true : secure,
+                    sameSite,
+                    path: '/',
+                })
+            }
+        }
+    }
+}
+
 export default {
     setJwtConfig,
     setAuthCookieDefaults,
@@ -283,5 +333,6 @@ export default {
     verifyRefreshToken,
     setTokenCookies,
     setAccessTokenCookie,
-    clearTokenCookies
+    clearTokenCookies,
+    clearTokenCookieVariants
 }

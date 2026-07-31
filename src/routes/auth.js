@@ -5,7 +5,7 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20'
 import { Strategy as MicrosoftStrategy } from 'passport-microsoft'
 import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2'
 import jwt from '../services/jwt.js'
-import { authenticate } from '../middleware/authenticate.js'
+import { authenticate, optionalAuth } from '../middleware/authenticate.js'
 import { generateToken, hashToken } from '../utils/singleUseToken.js'
 import { isAgentAccount, isEmailVerifiedForPolicy } from '../lib/emailVerification.js'
 import { assertRateLimit, getClientIp, RateLimitError } from '../lib/rateLimit.js'
@@ -30,6 +30,10 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 // rule. Tightening later would need a one-time forced reset for users below
 // the new floor.
 const MIN_PASSWORD_LENGTH = 6
+// Deliberately stricter than MIN_PASSWORD_LENGTH, which also governs register
+// and token-driven reset. Someone changing a working password is making a free
+// choice and should not be able to weaken the account below current guidance.
+const CHANGE_PASSWORD_MIN_LENGTH = 8
 
 const REGISTER_IP_LIMIT = 5
 const REGISTER_IP_WINDOW_MS = 60 * 60 * 1000
@@ -75,8 +79,11 @@ export default function createAuthRouter(authRepository, config = {}) {
         cookieMode: config.cookieMode ?? 'same-site',
         cookies: config.cookies ?? {}
     })
-    if (typeof config.resolveCookieMode === 'function') {
-        router.use(jwt.createCookieModeMiddleware(config.resolveCookieMode))
+    if (typeof config.resolveCookieMode === 'function' || typeof config.resolveCookieOverrides === 'function') {
+        router.use(jwt.createCookieModeMiddleware(
+            config.resolveCookieMode ?? (() => undefined),
+            config.resolveCookieOverrides,
+        ))
     }
 
     // Optional verification email sender. If provided, /register issues a
@@ -598,6 +605,98 @@ export default function createAuthRouter(authRepository, config = {}) {
         }
     })
 
+    // Change password for the signed-in user.
+    //
+    // Distinct from /reset-password, which is token-driven for someone locked
+    // out. This one proves identity with the CURRENT password, so it needs no
+    // email round-trip.
+    //
+    // Agents are refused: their password lives in the EACH `negotiator` table,
+    // not here, and 4prop mirrors it. They are directed to each.co.uk.
+    router.post('/change-password', authenticate, async (req, res) => {
+        try {
+            if (typeof authRepository.getUserCredentialsById !== 'function' ||
+                typeof authRepository.updatePasswordById !== 'function') {
+                return res.status(501).json({ error: 'Password change not supported' })
+            }
+
+            // Guessing the current password must not be cheap.
+            assertRateLimit(`change-password:user:${req.user.userId}`, 10, 15 * 60 * 1000)
+
+            const { currentPassword, newPassword } = req.body || {}
+
+            if (!currentPassword || typeof currentPassword !== 'string' ||
+                !newPassword || typeof newPassword !== 'string') {
+                return res.status(400).json({
+                    error: 'Missing required fields: currentPassword, newPassword',
+                })
+            }
+
+            // Stricter than MIN_PASSWORD_LENGTH: a user choosing a NEW password
+            // deliberately should not be able to weaken an existing account.
+            if (newPassword.length < CHANGE_PASSWORD_MIN_LENGTH) {
+                return res.status(400).json({
+                    error: `Password must be at least ${CHANGE_PASSWORD_MIN_LENGTH} characters`,
+                })
+            }
+
+            if (newPassword === currentPassword) {
+                return res.status(400).json({
+                    error: 'New password must be different from the current password',
+                })
+            }
+
+            const user = await authRepository.getUserCredentialsById(req.user.userId)
+            if (!user) {
+                return res.status(404).json({ error: 'User account not found' })
+            }
+
+            if (isAgentAccount(user)) {
+                return res.status(403).json({
+                    error: 'Your password is managed by EACH. Please change it at each.co.uk.',
+                    code: 'EACH_MANAGED_PASSWORD',
+                })
+            }
+
+            if (!user.password) {
+                // OAuth-only account: there is no password to verify against.
+                return res.status(400).json({
+                    error: user.oauth_provider
+                        ? `This account signs in with ${user.oauth_provider}. Set a password using the forgot-password email instead.`
+                        : 'This account has no password set. Use the forgot-password email to set one.',
+                    code: 'NO_PASSWORD_SET',
+                })
+            }
+
+            if (!phpPassword.verify(currentPassword, user.password)) {
+                // 400, NOT 401. Clients treat 401 as "session expired" and will
+                // try to refresh (and may sign the user out) — a wrong current
+                // password is a form error, not an authentication failure.
+                return res.status(400).json({
+                    error: 'Current password is incorrect',
+                    code: 'INCORRECT_CURRENT_PASSWORD',
+                })
+            }
+
+            const updated = await authRepository.updatePasswordById(
+                req.user.userId,
+                phpPassword.hash(newPassword),
+            )
+
+            if (!updated) {
+                return res.status(404).json({ error: 'User account not found' })
+            }
+
+            res.json({ success: true })
+        } catch (error) {
+            if (error instanceof RateLimitError) {
+                return res.status(429).json({ error: error.message, retryAfter: error.resetIn })
+            }
+            console.error('Change-password error:', error)
+            res.status(500).json({ error: 'Password change failed' })
+        }
+    })
+
     // Refresh token
     router.post('/refresh', async (req, res) => {
         try {
@@ -638,12 +737,35 @@ export default function createAuthRouter(authRepository, config = {}) {
     })
 
     // Get current user
-    router.get('/me', authenticate, async (req, res) => {
+    // `optionalAuth` (not `authenticate`) so an anonymous visitor gets a plain
+    // 200 { user: null } instead of a 401. `/me` is a "who am I" probe the SPA
+    // fires on every page to discover its auth state; for a logged-out visitor a
+    // 401 is the *expected* answer, but the browser logs every 401 as a console
+    // error (surfaced by Lighthouse's "Browser errors" audit) and that cannot be
+    // silenced from JS. Returning "nobody" as a success removes the noise. The
+    // frontend treats `user: null` as anonymous, exactly as it treated the 401.
+    router.get('/me', optionalAuth, async (req, res) => {
         try {
+            // No / invalid token → anonymous. Not an error: the caller just isn't
+            // signed in, which is a normal state for a public listing page.
+            //
+            // `canRefresh` tells the SPA whether a POST /refresh could plausibly
+            // recover a session. The refresh cookie is httpOnly, so the client
+            // can't check for itself; without this hint it must probe /refresh on
+            // every anonymous page load and eat a 401 the browser logs to the
+            // console. false ⇒ no cookie at all ⇒ skip the probe entirely.
+            if (!req.user) {
+                return res.json({ user: null, canRefresh: !!req.cookies?.refresh_token })
+            }
+
             const user = await authRepository.getUserById(req.user.userId)
 
+            // Valid token but the user no longer exists (deleted account with a
+            // still-live token). The session is effectively anonymous — report it
+            // as such rather than a 404, so the SPA cleanly falls back to logged-out.
+            // Refreshing can't conjure the user back, so never suggest a retry.
             if (!user) {
-                return res.status(404).json({ error: 'User not found' })
+                return res.json({ user: null, canRefresh: false })
             }
 
             const payload = {
@@ -685,6 +807,9 @@ export default function createAuthRouter(authRepository, config = {}) {
     // Logout
     router.post('/logout', (req, res) => {
         jwt.clearTokenCookies(res)
+        if (typeof config.clearExtraAuthCookies === 'function') {
+            config.clearExtraAuthCookies(req, res)
+        }
         res.json({ success: true })
     })
 

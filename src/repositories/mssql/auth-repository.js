@@ -206,7 +206,18 @@ export default class MSSQLAuthRepository {
                     u.[email_verified_at],
                     n.[phone],
                     n.[DID] AS [did],
-                    COALESCE(c.[name], u.[company]) [company]
+                    COALESCE(c.[name], u.[company]) [company],
+                    -- The advertiser this user owns, if any. Mirrors the legacy
+                    -- PHP /api/login, which attached advertiser_id when the
+                    -- ROLE_ADVERTISER (64) bit was set; the SPA account page
+                    -- reads it to decide whether to show the billing and
+                    -- self-billing cards. NULL for everyone else.
+                    (
+                        SELECT TOP 1 ma.[id]
+                        FROM a_magAdvertisers ma
+                        WHERE ma.[user_id] = u.[id]
+                        ORDER BY ma.[id]
+                    ) AS [advertiser_id]
                 FROM a_rcUsers u
                 LEFT JOIN a_rpNegotiator n
                     ON LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32))))
@@ -215,6 +226,51 @@ export default class MSSQLAuthRepository {
             `)
 
         return result.recordset[0] || null
+    }
+
+    /**
+     * Fetch the stored password hash for a user id.
+     *
+     * Separate from getUserById, whose projection deliberately omits the hash
+     * (it feeds /me). Used by the authenticated change-password flow to verify
+     * the caller's current password.
+     *
+     * @param {number|string} userId
+     * @returns {Promise<{ id: number, password: string|null, neg_id: string|null, oauth_provider: string|null } | null>}
+     */
+    async getUserCredentialsById(userId) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('userId', userId)
+            .query(`
+                SELECT [id], [password], [neg_id], [oauth_provider]
+                FROM a_rcUsers
+                WHERE [id] = @userId
+            `)
+
+        return result.recordset[0] || null
+    }
+
+    /**
+     * Overwrite a user's password hash. Caller hashes before calling — this
+     * stores what it is given, matching consumePasswordResetToken.
+     *
+     * @param {number|string} userId
+     * @param {string} hashedPassword
+     * @returns {Promise<boolean>} true if a row was updated
+     */
+    async updatePasswordById(userId, hashedPassword) {
+        const pool = await getPool()
+        const result = await pool.request()
+            .input('userId', userId)
+            .input('password', sql.Text, hashedPassword)
+            .query(`
+                UPDATE a_rcUsers
+                SET [password] = @password
+                WHERE [id] = @userId
+            `)
+
+        return result.rowsAffected[0] > 0
     }
 
     async getUserByNegId(negId) {
@@ -236,7 +292,18 @@ export default class MSSQLAuthRepository {
                     u.[email_verified_at],
                     n.[phone],
                     n.[DID] AS [did],
-                    COALESCE(c.[name], u.[company]) [company]
+                    COALESCE(c.[name], u.[company]) [company],
+                    -- The advertiser this user owns, if any. Mirrors the legacy
+                    -- PHP /api/login, which attached advertiser_id when the
+                    -- ROLE_ADVERTISER (64) bit was set; the SPA account page
+                    -- reads it to decide whether to show the billing and
+                    -- self-billing cards. NULL for everyone else.
+                    (
+                        SELECT TOP 1 ma.[id]
+                        FROM a_magAdvertisers ma
+                        WHERE ma.[user_id] = u.[id]
+                        ORDER BY ma.[id]
+                    ) AS [advertiser_id]
                 FROM a_rcUsers u
                 LEFT JOIN a_rpNegotiator n
                     ON LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32))))
