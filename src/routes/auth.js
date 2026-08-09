@@ -798,7 +798,30 @@ export default function createAuthRouter(authRepository, config = {}) {
                 payload.impersonationAllowedMutations = req.user.impersonationAllowedMutations
             }
 
-            res.json({ user: payload })
+            // Hand back the access token alongside the user so a signed-in SPA needs
+            // ONE round-trip, not two. GET /access-token does no minting and no DB
+            // work — it just echoes this same httpOnly cookie back (see that route) —
+            // and `optionalAuth` above has already read it to build req.user. Sending
+            // it here removes a request the client would otherwise always chain after
+            // this one, and moves "is a token available?" to the server, where the
+            // answer is known, instead of the client inferring it from /me's state.
+            //
+            // Read the COOKIE specifically, not the credential that authenticated this
+            // request: optionalAuth also accepts an Authorization bearer (cross-origin
+            // SPA hosts), and a caller who authenticated that way already holds its
+            // token — there is no cookie to hand back and null is the honest answer.
+            //
+            // Exposure is unchanged: same token, same response, same first-party
+            // origin, and the SPA keeps it in memory only (never web storage).
+            // GET /access-token REMAINS — the post-refresh retry path needs a freshly
+            // rotated token, which a cached /me cannot provide.
+            const cookieAccessToken = req.cookies?.access_token ?? null
+
+            res.json({
+                user: payload,
+                access_token: cookieAccessToken,
+                ...(cookieAccessToken ? { token_type: 'Bearer', expires_in: 900 } : {}),
+            })
         } catch (error) {
             res.status(500).json({ error: 'Failed to fetch user' })
         }

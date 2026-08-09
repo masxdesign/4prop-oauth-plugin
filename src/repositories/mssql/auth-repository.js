@@ -207,6 +207,42 @@ export default class MSSQLAuthRepository {
                     n.[phone],
                     n.[DID] AS [did],
                     COALESCE(c.[name], u.[company]) [company],
+                    -- Agent identity + company branding, from joins this query ALREADY
+                    -- makes. Without these the SPA had to chain two more round-trips on
+                    -- every page load for a signed-in agent:
+                    --   /me -> /api/agents/by-nids (cid/bid/did) -> /api/companies (logo)
+                    -- both resolving THIS user's own identity. PropertyTypeHoverMenu
+                    -- mounts on every page, so it fired everywhere, not just listings.
+                    --
+                    -- Column names/aliases match the getCompanies() projection the SPA's
+                    -- makeEnhancedCompanies() already consumes (c/b/d + the a/p/s picture
+                    -- tokens + branch/department), so the cached value is the same shape
+                    -- the existing fetcher produces.
+                    n.[cid]        AS [cid],
+                    n.[BID]        AS [bid],
+                    -- The agent's OWN branch/department names. These are what
+                    -- /api/agents/by-nids returns and what labels the "My branch" /
+                    -- "My department" listing variants. Distinct from the company
+                    -- display row below — verified they genuinely differ (agent 120620
+                    -- is in branch "London", while the company row reports "TEST").
+                    ab.[name]      AS [branch],
+                    ad.[name]      AS [department],
+                    -- Company display row. NOT the agent's own branch/department:
+                    -- getCompanies() picks ONE representative row per company via
+                    --   ROW_NUMBER() OVER (PARTITION BY c.cid
+                    --                      ORDER BY LEN(d.pics + b.pics + c.ps) ASC)
+                    -- and the SPA caches that shape. Reproduce it exactly or the "My
+                    -- company" menu would render different branch/logo values than the
+                    -- endpoint it replaces (verified: for cid 95 the agent sits in
+                    -- branch "London" but getCompanies returns "TEST").
+                    cr.[branch]    AS [company_branch],
+                    cr.[department] AS [company_department],
+                    cr.[a]         AS [company_pics_a],
+                    cr.[p]         AS [company_pics_p],
+                    cr.[s]         AS [company_pics_s],
+                    cr.[b]         AS [company_bid],
+                    cr.[d]         AS [company_did],
+                    cr.[phone]     AS [company_phone],
                     -- The advertiser this user owns, if any. Mirrors the legacy
                     -- PHP /api/login, which attached advertiser_id when the
                     -- ROLE_ADVERTISER (64) bit was set; the SPA account page
@@ -222,6 +258,28 @@ export default class MSSQLAuthRepository {
                 LEFT JOIN a_rpNegotiator n
                     ON LTRIM(RTRIM(CAST(n.[NID] AS VARCHAR(32)))) = LTRIM(RTRIM(CAST(u.[neg_id] AS VARCHAR(32))))
                 LEFT JOIN a_rcCompany c ON c.[cid] = n.[cid]
+                -- The agent's OWN branch/department (what by-nids reports).
+                LEFT JOIN a_rpBranch ab ON ab.[bid] = n.[BID]
+                LEFT JOIN a_rcDepartment ad ON ad.[did] = n.[DID]
+                -- One representative row per company, matching getCompanies()'s rule
+                -- exactly (see the aliases above). OUTER APPLY, so a user with no
+                -- negotiator record (a plain seeker) still returns exactly as before.
+                OUTER APPLY (
+                    SELECT TOP 1
+                        b2.[phone]  AS [phone],
+                        d2.[pics]   AS [a],
+                        b2.[pics]   AS [p],
+                        c2.[ps]     AS [s],
+                        d2.[did]    AS [d],
+                        b2.[bid]    AS [b],
+                        b2.[name]   AS [branch],
+                        d2.[name]   AS [department]
+                    FROM a_rcDepartment d2
+                    INNER JOIN a_rpBranch b2 ON d2.[bid] = b2.[bid]
+                    INNER JOIN a_rcCompany c2 ON b2.[cid] = c2.[cid]
+                    WHERE c2.[cid] = n.[cid]
+                    ORDER BY LEN(ISNULL(d2.[pics], '') + ISNULL(b2.[pics], '') + ISNULL(c2.[ps], '')) ASC
+                ) cr
                 WHERE u.[id] = @userId
             `)
 
